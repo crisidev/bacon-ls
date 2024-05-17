@@ -1,3 +1,4 @@
+//! Bacon Language Server
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
@@ -26,155 +27,6 @@ pub(crate) struct State {
 pub struct BaconLs {
     client: Client,
     state: Mutex<State>,
-}
-
-#[tower_lsp::async_trait]
-impl LanguageServer for BaconLs {
-    async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
-        tracing::info!(
-            "initializing {PKG_NAME}, params: {}",
-            to_string(&params).unwrap_or_default()
-        );
-
-        if let Some(TextDocumentClientCapabilities {
-            publish_diagnostics:
-                Some(PublishDiagnosticsClientCapabilities {
-                    data_support: Some(true),
-                    ..
-                }),
-            ..
-        }) = params.capabilities.text_document
-        {
-            tracing::info!("client supports diagnostics data and diagnostics")
-        } else {
-            tracing::error!("client does not support diagnostics data");
-            return Err(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidRequest));
-        }
-
-        let mut state = self.state.lock().await;
-        state.workspace_folders = params.workspace_folders;
-
-        if let Some(ops) = params.initialization_options {
-            if let Some(values) = ops.as_object() {
-                if let Some(value) = values.get("locationsFile").cloned() {
-                    state.locations_file = value.as_str().unwrap_or("").to_lowercase();
-                } else {
-                    state.locations_file = LOCATIONS_FILE.to_string();
-                }
-                if let Some(value) = values.get("waitTimeSeconds").cloned() {
-                    state.wait_time = Duration::from_secs(value.as_u64().unwrap_or(WAIT_TIME_SECONDS));
-                } else {
-                    state.wait_time = Duration::from_secs(WAIT_TIME_SECONDS);
-                }
-            }
-        }
-
-        Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                // only support UTF-16 positions for now, which is the default when unspecified
-                position_encoding: Some(PositionEncodingKind::UTF16),
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
-                )),
-                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
-                    DiagnosticOptions {
-                        // workspace_diagnostics: true,
-                        ..Default::default()
-                    },
-                )),
-                ..Default::default()
-            },
-            server_info: Some(ServerInfo {
-                name: PKG_NAME.to_string(),
-                version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            }),
-        })
-    }
-
-    async fn initialized(&self, _: InitializedParams) {
-        self.client
-            .log_message(MessageType::INFO, format!("{PKG_NAME} server initialized!"))
-            .await;
-    }
-
-    async fn workspace_diagnostic(
-        &self,
-        _params: WorkspaceDiagnosticParams,
-    ) -> jsonrpc::Result<WorkspaceDiagnosticReportResult> {
-        let mut diagnostics = Vec::new();
-        for (path, diagnostic) in self.diagnostics_map(None).await {
-            diagnostics.push(WorkspaceDocumentDiagnosticReport::Full(
-                WorkspaceFullDocumentDiagnosticReport {
-                    uri: path,
-                    version: None,
-                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                        result_id: None,
-                        items: diagnostic,
-                    },
-                },
-            ));
-        }
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!(
-                    "updating {} workspace diagnostic documents",
-                    diagnostics.len(),
-                ),
-            )
-            .await;
-
-        Ok(WorkspaceDiagnosticReportResult::Report(
-            WorkspaceDiagnosticReport { items: diagnostics },
-        ))
-    }
-
-    async fn diagnostic(
-        &self,
-        params: DocumentDiagnosticParams,
-    ) -> jsonrpc::Result<DocumentDiagnosticReportResult> {
-        let diagnostics = self
-            .diagnostics(Some(&params.text_document.uri))
-            .await
-            .into_iter()
-            .map(|(_, y)| y)
-            .collect::<Vec<Diagnostic>>();
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!(
-                    "updating {} document diagnostic for {}",
-                    diagnostics.len(),
-                    params.text_document.uri
-                ),
-            )
-            .await;
-        Ok(DocumentDiagnosticReportResult::Report(
-            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-                related_documents: None,
-                full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                    result_id: None,
-                    items: diagnostics,
-                },
-            }),
-        ))
-    }
-
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        // clear diagnostics to avoid a stale diagnostics flash on open
-        // if the file has typos fixed outside of vscode
-        // see https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_publishDiagnostics
-        self.client
-            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
-            .await;
-    }
-
-    async fn shutdown(&self) -> jsonrpc::Result<()> {
-        self.client
-            .log_message(MessageType::INFO, format!("{PKG_NAME} server stopped!"))
-            .await;
-        Ok(())
-    }
 }
 
 impl BaconLs {
@@ -230,7 +82,7 @@ impl BaconLs {
                             None
                         }) {
                             if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, uri).await
+                                Self::parse_bacon_diagnostic_line(&line, uri)
                             {
                                 diagnostics.push((path, diagnostic));
                             }
@@ -243,6 +95,14 @@ impl BaconLs {
             }
         }
         diagnostics
+    }
+
+    async fn diagnostics_vec(&self, uri: Option<&Url>) -> Vec<Diagnostic> {
+        self.diagnostics(uri)
+            .await
+            .into_iter()
+            .map(|(_, y)| y)
+            .collect::<Vec<Diagnostic>>()
     }
 
     async fn diagnostics_map(&self, uri: Option<&Url>) -> HashMap<Url, Vec<Diagnostic>> {
@@ -284,10 +144,7 @@ impl BaconLs {
         }
     }
 
-    async fn parse_bacon_diagnostic_line(
-        line: &str,
-        uri: Option<&Url>,
-    ) -> Option<(Url, Diagnostic)> {
+    fn parse_bacon_diagnostic_line(line: &str, uri: Option<&Url>) -> Option<(Url, Diagnostic)> {
         let line_split: Vec<&str> = line.splitn(5, ':').collect();
         if line_split.len() == 5 {
             let severity = match line_split[0] {
@@ -333,5 +190,236 @@ impl BaconLs {
             );
         }
         None
+    }
+}
+
+#[tower_lsp::async_trait]
+impl LanguageServer for BaconLs {
+    async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
+        tracing::info!(
+            "initializing {PKG_NAME}, params: {}",
+            to_string(&params).unwrap_or_default()
+        );
+
+        if let Some(TextDocumentClientCapabilities {
+            publish_diagnostics:
+                Some(PublishDiagnosticsClientCapabilities {
+                    data_support: Some(true),
+                    ..
+                }),
+            ..
+        }) = params.capabilities.text_document
+        {
+            tracing::info!("client supports diagnostics data and diagnostics")
+        } else {
+            tracing::error!("client does not support diagnostics data");
+            return Err(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidRequest));
+        }
+
+        let mut state = self.state.lock().await;
+        state.workspace_folders = params.workspace_folders;
+
+        if let Some(ops) = params.initialization_options {
+            if let Some(values) = ops.as_object() {
+                if let Some(value) = values.get("locationsFile").cloned() {
+                    state.locations_file = value.as_str().unwrap_or("").to_lowercase();
+                } else {
+                    state.locations_file = LOCATIONS_FILE.to_string();
+                }
+                if let Some(value) = values.get("waitTimeSeconds").cloned() {
+                    state.wait_time =
+                        Duration::from_secs(value.as_u64().unwrap_or(WAIT_TIME_SECONDS));
+                } else {
+                    state.wait_time = Duration::from_secs(WAIT_TIME_SECONDS);
+                }
+            }
+        }
+
+        Ok(InitializeResult {
+            capabilities: ServerCapabilities {
+                // only support UTF-16 positions for now, which is the default when unspecified
+                position_encoding: Some(PositionEncodingKind::UTF16),
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                    DiagnosticOptions {
+                        // workspace_diagnostics: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            server_info: Some(ServerInfo {
+                name: PKG_NAME.to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            }),
+        })
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        self.client
+            .publish_diagnostics(
+                params.text_document.uri.clone(),
+                self.diagnostics_vec(Some(&params.text_document.uri)).await,
+                None,
+            )
+            .await;
+    }
+
+    async fn initialized(&self, _: InitializedParams) {
+        self.client
+            .log_message(MessageType::INFO, format!("{PKG_NAME} server initialized!"))
+            .await;
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        _params: WorkspaceDiagnosticParams,
+    ) -> jsonrpc::Result<WorkspaceDiagnosticReportResult> {
+        let mut diagnostics = Vec::new();
+        for (path, diagnostic) in self.diagnostics_map(None).await {
+            diagnostics.push(WorkspaceDocumentDiagnosticReport::Full(
+                WorkspaceFullDocumentDiagnosticReport {
+                    uri: path,
+                    version: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diagnostic,
+                    },
+                },
+            ));
+        }
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "updating {} workspace diagnostic documents",
+                    diagnostics.len(),
+                ),
+            )
+            .await;
+
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items: diagnostics },
+        ))
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> jsonrpc::Result<DocumentDiagnosticReportResult> {
+        let diagnostics = self.diagnostics_vec(Some(&params.text_document.uri)).await;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "updating {} document diagnostic for {}",
+                    diagnostics.len(),
+                    params.text_document.uri
+                ),
+            )
+            .await;
+        self.client
+            .publish_diagnostics(params.text_document.uri.clone(), Vec::new(), None)
+            .await;
+        Ok(DocumentDiagnosticReportResult::Report(
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items: diagnostics,
+                },
+            }),
+        ))
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        // clear diagnostics to avoid a stale diagnostics flash on open
+        // if the file has typos fixed outside of vscode
+        // see https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_publishDiagnostics
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
+    }
+
+    async fn shutdown(&self) -> jsonrpc::Result<()> {
+        self.client
+            .log_message(MessageType::INFO, format!("{PKG_NAME} server stopped!"))
+            .await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    const ERROR_LINE: &str = "error:/app/github/bacon-ls/src/lib.rs:352:9:cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error";
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_ok() {
+        let result = BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, None);
+        let (url, diagnostic) = result.unwrap();
+        assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
+        assert_eq!(
+            diagnostic.message,
+            r#"cannot find value `one` in this scope
+    |
+352 |         one
+    |         ^^^ help: a unit variant with a similar name exists: `None`
+    |
+   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5
+    |
+576 |     None,
+    |     ---- similarly named unit variant `None` defined here
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `bacon-ls` (lib) due to 1 previous error"#
+        );
+        let result = BaconLs::parse_bacon_diagnostic_line(
+            ERROR_LINE,
+            Some(&Url::from_str("file:///app/github/bacon-ls/src/lib.rs").unwrap()),
+        );
+        let (url, diagnostic) = result.unwrap();
+        assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_ko() {
+        // Different path
+        let result = BaconLs::parse_bacon_diagnostic_line(
+            ERROR_LINE,
+            Some(&Url::from_str("file:///app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Non parsable path
+        let result = BaconLs::parse_bacon_diagnostic_line(
+            ERROR_LINE,
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Unparsable line
+        let result = BaconLs::parse_bacon_diagnostic_line(
+            "warning:/file:1:1",
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Empty line
+        let result = BaconLs::parse_bacon_diagnostic_line(
+            "",
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
     }
 }
