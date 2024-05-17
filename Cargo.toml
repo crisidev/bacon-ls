@@ -3,7 +3,7 @@ name = "bacon-ls"
 version = "0.1.0"
 edition = "2021"
 authors = ["Matteo Bigoi <bigo@crisidev.org"]
-license = "MIT"
+license-file = "LICENSE"
 
 [dependencies]
 once_cell = "1.19.0"
