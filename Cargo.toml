@@ -3,7 +3,14 @@ name = "bacon-ls"
 version = "0.1.0"
 edition = "2021"
 authors = ["Matteo Bigoi <bigo@crisidev.org"]
+description = "Bacon Language Server"
+documentation = "https://github.com/crisidev/bacon-ls"
+readme = "README.md"
+homepage = "https://github.com/crisidev/bacon-ls"
+repository = "https://github.com/crisidev/bacon-ls"
 license-file = "LICENSE"
+keywords = ["lsp", "bacon", "tokio", "neovim", "vim"]
+categories = ["command-line-utilities", "text-editors", "asynchronous", "development-tools"]
 
 [dependencies]
 once_cell = "1.19"
