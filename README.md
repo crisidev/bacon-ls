@@ -1,3 +1,3 @@
 # Bacon Language Server
 
-![bacon]("img/logo.png?raw=true")
+![bacon](./img/logo.png)
