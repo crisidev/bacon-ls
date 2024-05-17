@@ -1,3 +1,1 @@
-# Bacon Language Server
-
-![bacon](./img/logo.png)
+# ![bacon](./img/logo.png) Bacon Language Server
