@@ -17,6 +17,7 @@ Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
 * [Configuration](#configuration)
     * [Neovim - Manual](#neovim---manual)
     * [Neovim - LazyVim](#neovim---lazyvim)
+* [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
 
@@ -151,3 +152,6 @@ return {
     }
 }
 ```
+
+## Thanks
+Bacon-ls 🐽 has been inspired by [typos-lsp](https://github.com/tekumara/typos-lsp).
