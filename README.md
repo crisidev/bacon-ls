@@ -16,8 +16,8 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * [Features - ✅ done 🕖 in progress 🌍 future](#features---✅-done-🕖-in-progress-🌍-future)
 * [Installation](#installation)
 * [Configuration](#configuration)
-    * [Neovim - Manual](#neovim---manual)
     * [Neovim - LazyVim](#neovim---lazyvim)
+    * [Neovim - Manual](#neovim---manual)
 * [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
 
@@ -62,40 +62,6 @@ supports the following values:
 * `locationsFile` Bacon export filename, default `.bacon-locations`.
 * `waitTimeSeconds` Maximum time in seconds the LSP server waits for Bacon to 
 update the export file before loading the new diagnostics, default `10`.
-### Neovim - Manual
-
-NeoVim requires [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) to be configured 
-and [rust-analyzer](https://rust-analyzer.github.io/) diagnostics must be turned off for Bacon-Ls 🐽 
-to properly function.
-
-`nvim-lspconfig` must be configured to start bacon-ls 🐽 when opening
-the first Rust 🦀 file and works best when `update_in_insert = true`
-is set.
-
-```lua
-local configs = require("lspconfig.configs")
-if not configs.bacon_ls then
-    configs.bacon_ls = {
-        default_config = {
-            cmd = { "bacon-ls" },
-            root_dir = require("lspconfig").util.root_pattern(".git"),
-            filetypes = { "rust" },
-            settings = {
-                -- locationsFile = ".locations",
-                -- waitTimeSeconds = 5
-            }
-        },
-    }
-end
-lspconfig.bacon_ls.setup({ autostart = true })
-```
-
-For `rust-analyzer`, these 2 options must be turned off:
-
-```lua
-rust-analyzer.checkOnSave.enable = false
-rust-analyzer.diagnostics.enable = false
-```
 
 ### Neovim - LazyVim 
 ```lua
@@ -108,27 +74,13 @@ return {
             },
             servers = {
                 rust_analyzer = { enable = false },
-                bacon_ls = { enable = true },
-            },
-            setup = {
-                bacon_ls = function()
-                    local configs = require("lspconfig.configs")
-                    if not configs.bacon_ls then
-                        configs.bacon_ls = {
-                            default_config = {
-                                cmd = { "bacon-ls" },
-                                root_dir = require("lspconfig").util.root_pattern(".git"),
-                                filetypes = { "rust" },
-                                settings = {
-                                    -- locationsFile = ".locations",
-                                    -- waitTimeSeconds = 5
-                                }
-                            },
-                        }
-                    end
-                    lspconfig.bacon_ls.setup({})
-                    return true
-                end,
+                bacon_ls = { 
+                    enable = true 
+                    settings = {
+                        -- locationsFile = ".locations",
+                        -- waitTimeSeconds = 5
+                    },
+                },
             },
         },
     },
@@ -139,11 +91,40 @@ return {
                 ["rust-analyzer"] = { 
                     diagnostics = { enable = false },
                     checkOnSave = { enable = false },
-                }
-            }
-        }
-    }
+                },
+            },
+        },
+    },
 }
+```
+
+### Neovim - Manual
+
+NeoVim requires [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) to be configured 
+and [rust-analyzer](https://rust-analyzer.github.io/) diagnostics must be turned off for Bacon-Ls 🐽 
+to properly function.
+
+`bacon-ls` is part of `nvim-lspconfig` from commit 
+[6d2ae9f](https://github.com/neovim/nvim-lspconfig/commit/6d2ae9fdc3111a6e8fd5db2467aca11737195a30)
+and it can be configured like any other LSP server works best when 
+[vim.diagnostics.Opts.update_in_insert](https://neovim.io/doc/user/diagnostic.html#vim.diagnostic.Opts)
+is set to `true`.
+
+```lua
+require("lspconfig.configs").bacon_ls.setup({
+    autostart=true,
+    settings = {
+        -- locationsFile = ".locations",
+        -- waitTimeSeconds = 5
+    },
+})
+```
+
+For `rust-analyzer`, these 2 options must be turned off:
+
+```lua
+rust-analyzer.checkOnSave.enable = false
+rust-analyzer.diagnostics.enable = false
 ```
 ## How does it work?
 
