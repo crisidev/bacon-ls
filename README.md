@@ -5,6 +5,8 @@
 
 LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
 
+See Bacon-ls blog post: https://lmno.lol/crisidev/bacon-language-server
+
 ![Bacon screenshot](./screenshot.png)
 
 Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
@@ -12,11 +14,11 @@ Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
 <!-- vim-markdown-toc Marked -->
 
 * [Features - ✅ done 🕖 in progress 🌍 future](#features---✅-done-🕖-in-progress-🌍-future)
-* [How does it work?](#how-does-it-work?)
 * [Installation](#installation)
 * [Configuration](#configuration)
     * [Neovim - Manual](#neovim---manual)
     * [Neovim - LazyVim](#neovim---lazyvim)
+* [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
@@ -33,18 +35,8 @@ Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
 - 🕖 Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations
 - 🌍 VsCode extension and configuration
 - 🌍 Emacs configuration
-## How does it work?
 
-Bacon-ls 🐽 reads the diagnostics location list generated
-by [Bacon's export-locations](https://dystroy.org/bacon/config/#export-locations) 
-and exposes them on STDIO over the LSP protocol to be consumed
-by the client diagnostics.
-
-It requires [Bacon](https://dystroy.org/bacon/) to be running alongside 
-to ensure regular updates of the export locations.
-
-The LSP client reads them as response to `textDocument/diagnostic` and `workspace/diagnostic`.
-
+![Bacon gif](./bacon-ls.gif)
 ## Installation
 
 First, install [Bacon](https://dystroy.org/bacon/#installation) and Bacon-ls
@@ -152,6 +144,17 @@ return {
     }
 }
 ```
+## How does it work?
+
+Bacon-ls 🐽 reads the diagnostics location list generated
+by [Bacon's export-locations](https://dystroy.org/bacon/config/#export-locations) 
+and exposes them on STDIO over the LSP protocol to be consumed
+by the client diagnostics.
+
+It requires [Bacon](https://dystroy.org/bacon/) to be running alongside 
+to ensure regular updates of the export locations.
+
+The LSP client reads them as response to `textDocument/diagnostic` and `workspace/diagnostic`.
 
 ## Thanks
 Bacon-ls 🐽 has been inspired by [typos-lsp](https://github.com/tekumara/typos-lsp).
