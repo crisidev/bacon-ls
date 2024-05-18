@@ -11,84 +11,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  create-release:
-    name: Create release
+  release:
+    name: release ${{ matrix.target }}
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create-release.outputs.upload_url }}
-    steps:
-      - name: Create release
-        id: create-release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-  build-release:
-    name: Build release
-    needs: create-release
-    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        build:
-          - linux glib amd64
-          - linux glib arm64
-          - macos x64
-          - macos arm64
         include:
-          - build: linux glib amd64
-            os: ubuntu-latest
-            rust: stable
-            target: x86_64-unknown-linux-gnu
-          - build: linux glib arm64
-            os: ubuntu-latest
-            rust: stable
-            target: aarch64-unknown-linux-gnu
-          - build: macos x64
-            os: macos-latest
-            rust: stable
-            target: x86_64-apple-darwin
-          - build: macos arm64
-            os: macos-latest
-            rust: stable
-            target: aarch64-apple-darwin
-
-
+          - target: x86_64-pc-windows-gnu
+            archive: zip
+          - target: x86_64-unknown-linux-musl
+            archive: tar.gz
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
-
-      - name: Build release
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --target ${{ matrix.target }} --release
-
-      - name: Tar release (unix)
-        if: matrix.os != 'windows-2019'
-        working-directory: ./target/${{ matrix.target }}/release
-        run: tar cvfz bacon-ls-${{ matrix.target }}.tar.gz "bacon-ls"
-
-      - name: Upload release archive (unix)
-        if: matrix.os != 'windows-2019'
-        uses: actions/upload-release-asset@v1
+      - uses: actions/checkout@master
+      - name: Compile and release
+        uses: rust-build/rust-build.action@v1.4.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.target }}/release/bacon-ls-${{ matrix.target }}.tar.gz
-          asset_name: bacon-ls-${{ matrix.target }}.tar.gz
-          asset_content_type: application/octet-stream
+          RUSTTARGET: ${{ matrix.target }}
+          ARCHIVE_TYPES: ${{ matrix.archive }}
