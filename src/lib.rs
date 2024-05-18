@@ -136,7 +136,7 @@ impl BaconLs {
     async fn wait_for_bacon(locations_file: &str, wait_time: Duration) {
         let last_modified = Self::bacon_locations_file_modified(locations_file).await;
         let start = Instant::now();
-        while last_modified == Self::bacon_locations_file_modified(locations_file).await {
+        while last_modified == Self::bacon_locations_file_modified(&locations_file).await {
             if start.elapsed() > wait_time {
                 break;
             }

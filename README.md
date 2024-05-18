@@ -2,6 +2,10 @@
 
 LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
 
+![Bacon screenshot](./screenshot.png)
+
+Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
+
 <!-- vim-markdown-toc Marked -->
 
 * [Features - ✅ done 🕖 in progress 🌍 future](#features---✅-done-🕖-in-progress-🌍-future)
@@ -12,10 +16,6 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
     * [Neovim - LazyVim](#neovim---lazyvim)
 
 <!-- vim-markdown-toc -->
-
-![screenshot](./img/screenshot.png)
-
-Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
 
 ## Features - ✅ done 🕖 in progress 🌍 future
 
@@ -45,9 +45,8 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 
 First, install [Bacon](https://dystroy.org/bacon/#installation) and Bacon-ls
 
-```sh
-❯❯❯ cargo install --locked bacon
-❯❯❯ cargo install --locked bacon-ls
+```bash
+❯❯❯ cargo install --locked bacon bacon-ls
 ```
 
 Configure Bacon export-locations settings with Bacon-ls export format:
