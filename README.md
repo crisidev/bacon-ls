@@ -5,11 +5,11 @@
 
 LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
 
-See Bacon-ls blog post: https://lmno.lol/crisidev/bacon-language-server
+See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ![Bacon screenshot](./screenshot.png)
 
-Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
+`bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
 
 <!-- vim-markdown-toc Marked -->
 
@@ -39,13 +39,13 @@ Bacon-ls 🐽 is meant to be easy to include in your IDE configuration.
 ![Bacon gif](./bacon-ls.gif)
 ## Installation
 
-First, install [Bacon](https://dystroy.org/bacon/#installation) and Bacon-ls
+First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` 🐽
 
 ```bash
 ❯❯❯ cargo install --locked bacon bacon-ls
 ```
 
-Configure Bacon export-locations settings with Bacon-ls export format:
+Configure Bacon export-locations settings with `bacon-ls` 🐽 export format:
 
 ```toml
 [export]
@@ -67,7 +67,7 @@ NeoVim requires [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) to b
 and [rust-analyzer](https://rust-analyzer.github.io/) diagnostics must be turned off for Bacon-Ls 🐽 
 to properly function.
 
-`nvim-lspconfig` must be configured to start Bacon-ls 🐽 when opening
+`nvim-lspconfig` must be configured to start bacon-ls 🐽 when opening
 the first Rust 🦀 file and works best when `update_in_insert = true`
 is set.
 
@@ -146,7 +146,7 @@ return {
 ```
 ## How does it work?
 
-Bacon-ls 🐽 reads the diagnostics location list generated
+`bacon-ls` 🐽 reads the diagnostics location list generated
 by [Bacon's export-locations](https://dystroy.org/bacon/config/#export-locations) 
 and exposes them on STDIO over the LSP protocol to be consumed
 by the client diagnostics.
@@ -157,4 +157,4 @@ to ensure regular updates of the export locations.
 The LSP client reads them as response to `textDocument/diagnostic` and `workspace/diagnostic`.
 
 ## Thanks
-Bacon-ls 🐽 has been inspired by [typos-lsp](https://github.com/tekumara/typos-lsp).
+`bacon-ls` 🐽 has been inspired by [typos-lsp](https://github.com/tekumara/typos-lsp).
