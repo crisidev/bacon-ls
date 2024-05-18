@@ -25,6 +25,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ## Features - ✅ done 🕖 in progress 🌍 future
 
+- **NOTE: `bacon-ls` 🐽 does not start `bacon` for you, it requires it running in another terminal**
 - ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic` 
 - ✅ Manual Neovim configuration
 - ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
