@@ -1,5 +1,4 @@
 # 🐽 Bacon Language Server 🐽
-[![Release](https://img.shields.io/github/actions/workflow/status/crisidev/bacon-ls/release.yml?style=for-the-badge)](https://github.com/crisidev/bacon-ls/actions?query=workflow%3Arelease)
 [![Ci](https://img.shields.io/github/actions/workflow/status/crisidev/bacon-ls/test.yml?style=for-the-badge)](https://github.com/crisidev/bacon-ls/actions?query=workflow%3Atest)
 [![Crates.io](https://img.shields.io/crates/v/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/crisidev/bacon-ls/blob/main/LICENSE)
