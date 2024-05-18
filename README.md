@@ -31,7 +31,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 - ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
 - 🕖 Automatic NeoVim configuration
     - 🕖 Add `bacon-ls` to [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) - https://github.com/neovim/nvim-lspconfig/pull/3160 
-    - 🕖 Add `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) 
+    - 🕖 Add `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) - https://github.com/mason-org/mason-registry/pull/5774
     - 🕖 Add bacon-ls to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua)
 - 🕖 Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations
 - 🌍 VsCode extension and configuration
