@@ -5,7 +5,7 @@
   "publisher": "crisidev",
   "version": "0.2.0",
   "private": true,
-  "icon": "icon.png",
+  "icon": "img/icon.png",
   "repository": {
     "url": "https://github.com/crisidev/bacon-ls.git",
     "type": "git"

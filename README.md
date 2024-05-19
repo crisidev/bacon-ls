@@ -8,7 +8,7 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
 
 See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
-![Bacon screenshot](./screenshot.png)
+![Bacon screenshot](./img/screenshot.png)
 
 `bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
 
@@ -38,7 +38,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 - 🌍 VsCode extension and configuration
 - 🌍 Emacs configuration
 
-![Bacon gif](./bacon-ls.gif)
+![Bacon gif](./img/bacon-ls.gif)
 
 ## Installation
 
