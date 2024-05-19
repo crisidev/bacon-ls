@@ -1,0 +1,82 @@
+{
+    "name": "bacon-vscode",
+    "displayName": "Bacon Language Server",
+    "description": "Rust diagnostic based on Bacon",
+    "publisher": "crisidev",
+    "version": "0.2.0",
+    "private": true,
+    "icon": "icon.png",
+    "repository": {
+        "url": "https://github.com/crisidev/bacon-ls.git",
+        "type": "git"
+    },
+    "license": "MIT",
+    "keywords": [
+        "diagnostic",
+        "rust",
+        "lsp"
+    ],
+    "categories": [
+        "Linters",
+        "Other"
+    ],
+    "engines": {
+        "vscode": "^1.84.0"
+    },
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/main.js",
+    "contributes": {
+        "commands": [
+            {
+                "category": "BaconLs",
+                "command": "bacon_ls.restart",
+                "title": "Restart"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "BaconLs",
+            "properties": {
+                "bacon_ls.path": {
+                    "scope": "machine-overridable",
+                    "type": "string",
+                    "description": "Path to the `bacon-ls` binary. If empty the bundled binary will be used."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run esbuild-base -- --minify",
+        "package": "vsce package",
+        "esbuild-base": "esbuild ./vscode/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
+        "build": "npm run esbuild-base -- --sourcemap",
+        "watch": "npm run esbuild-base -- --sourcemap --watch",
+        "lint": "prettier --check . && eslint vscode --ext ts",
+        "fix": "prettier --write . && eslint vscode --ext ts --fix",
+        "pretest": "tsc && npm run build",
+        "test": "cross-env BACON_LS_PATH=$PWD/target/debug/bacon-ls node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/glob": "^8.1.0",
+        "@types/mocha": "^10.0.6",
+        "@types/node": "20.x",
+        "@types/vscode": "^1.84.0",
+        "@typescript-eslint/eslint-plugin": "^7.8.0",
+        "@typescript-eslint/parser": "^7.8.0",
+        "@vscode/test-electron": "^2.3.9",
+        "@vscode/vsce": "^2.26.0",
+        "cross-env": "^7.0.3",
+        "esbuild": "^0.20.2",
+        "eslint": "^8.56.0",
+        "glob": "^10.3.12",
+        "mocha": "^10.4.0",
+        "ovsx": "^0.9.1",
+        "prettier": "^3.2.5",
+        "typescript": "^5.4.5"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    }
+}

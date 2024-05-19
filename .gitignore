@@ -1,3 +1,10 @@
-/target
 .bacon-locations
 tarpaulin-report.html
+out
+dist
+node_modules
+.vscode-test/
+*.vsix
+target/
+bundled/
+vscode/extension.js.*
