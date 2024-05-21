@@ -37,7 +37,9 @@ impl BaconLs {
         }
     }
 
+    /// Run the LSP server.
     pub async fn serve() {
+        // Configure logging to file.
         let level = env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
         if level != "off" {
             tracing_subscriber::fmt()
@@ -53,8 +55,10 @@ impl BaconLs {
                 .with_span_events(FmtSpan::CLOSE)
                 .init();
         }
+        // Lock stdin / stdout.
         let stdin = tokio::io::stdin();
         let stdout = tokio::io::stdout();
+        // Start the service.
         let (service, socket) = LspService::new(Self::new);
         Server::new(stdin, stdout, socket).serve(service).await;
     }
@@ -244,7 +248,7 @@ impl LanguageServer for BaconLs {
                 )),
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
                     DiagnosticOptions {
-                        // workspace_diagnostics: true,
+                        workspace_diagnostics: true,
                         ..Default::default()
                     },
                 )),
