@@ -26,7 +26,7 @@ jobs:
             code-target: win32-x64
           - os: windows-latest
             target: i686-pc-windows-msvc
-            code-target: win32-i686
+            code-target: win32-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             code-target: win32-arm64
@@ -35,7 +35,7 @@ jobs:
             code-target: linux-x64
           - os: ubuntu-20.04
             target: i686-unknown-linux-gnu
-            code-target: linux-i686
+            code-target: linux-x64
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-gnu
             code-target: linux-arm64
@@ -63,7 +63,7 @@ jobs:
           target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Update apt repositories (linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'arm-unknown-linux-gnueabihf'
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'arm-unknown-linux-gnueabihf' || matrix.target == 'i686-unknown-linux-gnu'
         run: sudo apt-get update
       - name: Install GCC arm64 (linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -71,6 +71,9 @@ jobs:
       - name: Install GCC armhf (linux)
         if: matrix.target == 'arm-unknown-linux-gnueabihf'
         run: sudo apt-get install gcc-arm-linux-gnueabihf
+      - name: Install i686 glibc (linux)
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: sudo apt-get install gcc-multilib g++-multilib libc6-dev-i386
       - run: cargo build --target ${{ matrix.target }} --release
       - run: npm ci
       - name: vsce package
