@@ -1,6 +1,6 @@
 [package]
 name = "bacon-ls"
-version = "0.3.1"
+version = "0.4.0-dev"
 edition = "2021"
 authors = ["Matteo Bigoi <bigo@crisidev.org"]
 description = "Bacon Language Server"
@@ -13,9 +13,9 @@ keywords = ["lsp", "bacon", "tokio", "neovim", "vim"]
 categories = ["command-line-utilities", "text-editors", "asynchronous", "development-tools"]
 
 [dependencies]
-once_cell = "1.19"
-serde_json = "1.0"
-tokio = { version = "1.37", features = [
+once_cell = "1.20.2"
+serde_json = "1.0.132"
+tokio = { version = "1.41.1", features = [
     "macros",
     "rt-multi-thread",
     "io-std",
@@ -23,15 +23,15 @@ tokio = { version = "1.37", features = [
     "fs",
     "time",
 ] }
-tower-lsp = "0.20"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = [
+tower-lsp = "0.20.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", default-features = false, features = [
     "env-filter",
     "fmt",
 ] }
 
 [dev-dependencies]
-test-log = { version = "0.2", features = ["trace"] }
-httparse = "1.8"
-similar-asserts = "1.4"
-pretty_assertions = "1.4"
+test-log = { version = "0.2.16", features = ["trace"] }
+httparse = "1.9.5"
+similar-asserts = "1.6.0"
+pretty_assertions = "1.4.1"
