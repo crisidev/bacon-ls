@@ -15,19 +15,18 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 <!-- vim-markdown-toc Marked -->
 
-- [Features - ✅ done 🕖 in progress 🌍 future](#features---✅-done-🕖-in-progress-🌍-future)
-- [Installation](#installation)
-- [Configuration](#configuration)
-  - [Neovim - LazyVim](#neovim---lazyvim)
-  - [Neovim - Manual](#neovim---manual)
-- [How does it work?](#how-does-it-work?)
-- [Thanks](#thanks)
+* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
+* [Installation](#installation)
+* [Configuration](#configuration)
+    * [Neovim - LazyVim](#neovim---lazyvim)
+    * [Neovim - Manual](#neovim---manual)
+* [How does it work?](#how-does-it-work?)
+* [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
 
-## Features - ✅ done 🕖 in progress 🌍 future
+## Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future
 
-- 🔥 **`bacon-ls` 🐽 does not start `bacon` for you, it requires it running in another terminal**
 - ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic`
 - ✅ Manual Neovim configuration
 - ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
@@ -36,6 +35,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
   - ✅ Add `bacon` and `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) - https://github.com/mason-org/mason-registry/pull/5774
   - 🕖 Add `bacon-ls` to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua) - https://github.com/LazyVim/LazyVim/pull/3212
 - ✅ Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations - https://github.com/Canop/bacon/pull/187 https://github.com/Canop/bacon/pull/188
+- 🕖 Allow `bacon` to be started automatically by `bacon-ls`
 - 🌍 VsCode extension and configuration
 - 🌍 Emacs configuration
 
@@ -82,8 +82,11 @@ return {
                 bacon_ls = {
                     enable = true
                     settings = {
-                        -- locationsFile = ".locations",
-                        -- waitTimeSeconds = 5
+                        locationsFile = ".locations",
+                        baconSettings = {
+                            spawn = true,
+                            command = "bacon clippy -- --all-features"
+                        }
                     },
                 },
             },
@@ -112,15 +115,18 @@ to properly function.
 `bacon-ls` is part of `nvim-lspconfig` from commit
 [6d2ae9f](https://github.com/neovim/nvim-lspconfig/commit/6d2ae9fdc3111a6e8fd5db2467aca11737195a30)
 and it can be configured like any other LSP server works best when
-[vim.diagnostics.Opts.update_in_insert](https://neovim.io/doc/user/diagnostic.html#vim.diagnostic.Opts)
+[vim.diagnostics.opts.update_in_insert](https://neovim.io/doc/user/diagnostic.html#vim.diagnostic.Opts)
 is set to `true`.
 
 ```lua
 require("lspconfig.configs").bacon_ls.setup({
     autostart=true,
     settings = {
-        -- locationsFile = ".locations",
-        -- waitTimeSeconds = 5
+        locationsFile = ".locations",
+        baconSettings = {
+            spawn = true,
+            command = "bacon clippy -- --all-features"
+        }
     },
 })
 ```
