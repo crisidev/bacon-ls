@@ -19,18 +19,16 @@ categories = [
 
 [dependencies]
 argh = "0.1.12"
-tokio = { version = "1.41.1", features = [
+tokio = { version = "1.42.0", features = [
     "macros",
     "rt-multi-thread",
     "io-std",
     "io-util",
     "fs",
-    "time",
-    "process",
 ] }
 tower-lsp = "0.20.0"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", default-features = false, features = [
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", default-features = false, features = [
     "env-filter",
     "fmt",
 ] }

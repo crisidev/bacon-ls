@@ -77,20 +77,19 @@ return {
             diagnostics = {
                 update_in_insert = true,
             },
-            servers = {
-                rust_analyzer = { enable = false },
-                bacon_ls = {
-                    enable = true
-                    settings = {
-                        locationsFile = ".locations",
-                        baconSettings = {
-                            spawn = true,
-                            command = "bacon clippy -- --all-features"
-                        }
-                    },
-                },
-            },
         },
+        setup = { 
+            bacon_ls = function()
+                require("lspconfig").bacon_ls.setup({
+                    init_options = {
+                        spawnBacon = true,
+                        spawnBaconCommand = "bacon clippy -- --all-features"
+                        updateOnSave = true
+                    }
+                })
+                return true
+            end,
+        }
     },
     {
         "mrcjkb/rustaceanvim",
@@ -119,15 +118,12 @@ and it can be configured like any other LSP server works best when
 is set to `true`.
 
 ```lua
-require("lspconfig.configs").bacon_ls.setup({
-    autostart=true,
-    settings = {
-        locationsFile = ".locations",
-        baconSettings = {
-            spawn = true,
-            command = "bacon clippy -- --all-features"
-        }
-    },
+require("lspconfig").bacon_ls.setup({
+    init_options = {
+        spawnBacon = true,
+        spawnBaconCommand = "bacon clippy -- --all-features"
+        updateOnSave = true
+    }
 })
 ```
 
