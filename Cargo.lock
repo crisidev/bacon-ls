@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "bacon-ls"
-version = "0.5.0-dev"
+version = "0.5.0"
 dependencies = [
  "argh",
  "httparse",
