@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+use std::time::Duration;
 
 use argh::FromArgs;
 use tokio::fs::File;
@@ -29,6 +30,8 @@ struct State {
     workspace_folders: Option<Vec<WorkspaceFolder>>,
     locations_file: String,
     update_on_save: bool,
+    update_on_save_wait_millis: Duration,
+    update_on_change: bool,
 }
 
 impl Default for State {
@@ -37,6 +40,8 @@ impl Default for State {
             workspace_folders: None,
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,
+            update_on_save_wait_millis: Duration::from_millis(1000),
+            update_on_change: true,
         }
     }
 }
@@ -105,7 +110,8 @@ impl BaconLs {
         let mut diagnostics = vec![];
         if let Some(workspace_folders) = workspace_folders.as_ref() {
             for folder in workspace_folders.iter() {
-                let bacon_locations = Path::new(&folder.name).join(&locations_file);
+                let folder_path = Path::new(&folder.name);
+                let bacon_locations = folder_path.join(&locations_file);
                 match File::open(&bacon_locations).await {
                     Ok(fd) => {
                         let reader = BufReader::new(fd);
@@ -118,7 +124,7 @@ impl BaconLs {
                             None
                         }) {
                             if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, uri)
+                                Self::parse_bacon_diagnostic_line(&line, folder_path, uri)
                             {
                                 diagnostics.push((path, diagnostic));
                             }
@@ -161,29 +167,35 @@ impl BaconLs {
         }
     }
 
-    fn parse_bacon_diagnostic_line(line: &str, uri: Option<&Url>) -> Option<(Url, Diagnostic)> {
-        let line_split: Vec<&str> = line.splitn(5, ':').collect();
-        if line_split.len() == 5 {
+    fn parse_bacon_diagnostic_line(
+        line: &str,
+        folder_path: &Path,
+        uri: Option<&Url>,
+    ) -> Option<(Url, Diagnostic)> {
+        let line_split: Vec<&str> = line.splitn(7, ':').collect();
+        if line_split.len() == 7 {
             let severity = match line_split[0] {
                 "warning" => DiagnosticSeverity::WARNING,
                 "info" | "information" => DiagnosticSeverity::INFORMATION,
-                "hint" => DiagnosticSeverity::HINT,
+                "hint" | "help" => DiagnosticSeverity::HINT,
                 _ => DiagnosticSeverity::ERROR,
             };
-            let path = line_split[1];
-            let line = line_split[2].parse().unwrap_or(1);
-            let col = line_split[3].parse().unwrap_or(1);
-            match format!("file://{}", path).parse::<Url>() {
+            let file_path = folder_path.join(line_split[1]);
+            let line_start = line_split[2].parse().unwrap_or(1);
+            let line_end = line_split[3].parse().unwrap_or(1);
+            let column_start = line_split[4].parse().unwrap_or(1);
+            let column_end = line_split[5].parse().unwrap_or(1);
+            match format!("file://{}", file_path.display()).parse::<Url>() {
                 Ok(path) => {
                     if uri.is_none() || Some(&path) == uri {
-                        let message = line_split[4].replace("\\n", "\n");
-                        tracing::debug!("new diagnostic: severity: {severity:?}, path: {path}, line: {line}, col: {col}, message: {message}");
+                        let message = line_split[6].replace("\\n", "\n");
+                        tracing::debug!("new diagnostic: severity: {severity:?}, path: {path}, line_start: {line_start}, line_end: {line_end}, column_start: {column_start}, column_end: {column_end}, message: {message}");
                         return Some((
                             path,
                             Diagnostic {
                                 range: Range::new(
-                                    Position::new((line - 1) as u32, col - 1),
-                                    Position::new((line - 1) as u32, col + 4),
+                                    Position::new((line_start - 1) as u32, column_start - 1),
+                                    Position::new((line_end - 1) as u32, column_end - 1),
                                 ),
                                 severity: Some(severity),
                                 source: Some(PKG_NAME.to_string()),
@@ -193,17 +205,17 @@ impl BaconLs {
                         ));
                     } else {
                         tracing::debug!(
-                            "request diagnostic file path doesn't match bacon file path"
+                            "request diagnostic file path doesn't match bacon file path {path}"
                         );
                     }
                 }
                 Err(e) => {
-                    tracing::error!("error parsing file {path} path: {e}")
+                    tracing::error!("error parsing file {} path: {e}", file_path.display())
                 }
             }
         } else {
             tracing::error!(
-                "error extracting bacon diagnostic, malformed level:path:line:col:message"
+                "error extracting bacon diagnostic, malformed severity:path:line_start:line_end:column_start:column_end:message"
             );
         }
         None
@@ -214,6 +226,7 @@ impl BaconLs {
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         tracing::info!("initializing {PKG_NAME} v{PKG_VERSION}",);
+        tracing::debug!("initializing with input parameters: {params:#?}");
 
         if let Some(TextDocumentClientCapabilities {
             publish_diagnostics:
@@ -244,6 +257,18 @@ impl LanguageServer for BaconLs {
                 }
                 if let Some(value) = values.get("updateOnSave") {
                     state.update_on_save = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?;
+                }
+                if let Some(value) = values.get("updateOnSaveWaitMillis") {
+                    state.update_on_save_wait_millis = Duration::from_millis(
+                        value
+                            .as_u64()
+                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?,
+                    );
+                }
+                if let Some(value) = values.get("updateOnChange") {
+                    state.update_on_change = value
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?;
                 }
@@ -354,9 +379,21 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        tracing::debug!("client sent didSave request");
-        let update_on_save = self.state.read().await.update_on_save;
+        let guard = self.state.read().await;
+        let update_on_save = guard.update_on_save;
+        let update_on_save_wait_millis = guard.update_on_save_wait_millis;
+        drop(guard);
+        tracing::debug!("client sent didSave request, update_on_save is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
         if update_on_save {
+            tokio::time::sleep(update_on_save_wait_millis).await;
+            self.publish_diagnostics(&params.text_document.uri).await;
+        }
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let update_on_change = self.state.read().await.update_on_change;
+        tracing::debug!("client sent didChange request, update_on_change is {update_on_change}");
+        if update_on_change {
             self.publish_diagnostics(&params.text_document.uri).await;
         }
     }

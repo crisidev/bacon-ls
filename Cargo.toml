@@ -1,6 +1,6 @@
 [package]
 name = "bacon-ls"
-version = "0.4.0"
+version = "0.5.0-dev"
 edition = "2021"
 authors = ["Matteo Bigoi <bigo@crisidev.org>"]
 description = "Bacon Language Server"
@@ -18,13 +18,14 @@ categories = [
 ]
 
 [dependencies]
-argh = "0.1.12"
+argh = "0.1.13"
 tokio = { version = "1.42.0", features = [
     "macros",
     "rt-multi-thread",
     "io-std",
     "io-util",
     "fs",
+    "time",
 ] }
 tower-lsp = "0.20.0"
 tracing = "0.1.41"

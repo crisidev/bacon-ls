@@ -7,6 +7,6 @@ async fn main() {
     if args.version {
         println!("{}", bacon_ls::PKG_VERSION);
     } else {
-        BaconLs::serve().await
+        BaconLs::serve().await;
     }
 }
