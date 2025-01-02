@@ -16,22 +16,24 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 `bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
 
-<!-- vim-markdown-toc Marked -->
 
-- [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
-- [Installation](#installation)
-  - [Mason.nvim](#mason.nvim)
-  - [Manual](#manual)
-- [Configuration](#configuration)
-  - [Neovim - LazyVim](#neovim---lazyvim)
-  - [Neovim - Manual](#neovim---manual)
-  - [Vscode](#vscode)
-- [Troubleshooting](#troubleshooting)
-- [How does it work?](#how-does-it-work?)
-- [Thanks](#thanks)
+
+* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
+* [Installation](#installation)
+    * [VSCode](#vscode)
+    * [Mason.nvim](#mason.nvim)
+    * [Manual](#manual)
+* [Configuration](#configuration)
+    * [Neovim - LazyVim](#neovim---lazyvim)
+    * [Neovim - Manual](#neovim---manual)
+    * [VSCode](#vscode)
+* [Troubleshooting](#troubleshooting)
+    * [Neovim](#neovim)
+    * [VSCode](#vscode)
+* [How does it work?](#how-does-it-work?)
+* [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
-
 ## Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future
 
 - ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic`
@@ -43,12 +45,18 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
   - ✅ Add `bacon-ls` to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua) - https://github.com/LazyVim/LazyVim/pull/3212
 - ✅ Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations - https://github.com/Canop/bacon/pull/187 https://github.com/Canop/bacon/pull/188
 - ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from Bacon 3.7
-- 🌍 VsCode extension and configuration
+- ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from v0.6.0
+- 🌍 VSCode extension published available on Marketplace
 - 🌍 Emacs configuration
 
 ![Bacon gif](./img/bacon-ls.gif)
 
 ## Installation
+
+### VSCode
+
+Until the extension is published on the VSCode Marketplace, please download it from the [release](https://github.com/crisidev/bacon-ls/releases) 
+and install it manually.
 
 ### Mason.nvim
 
@@ -132,19 +140,29 @@ rust-analyzer.checkOnSave.enable = false
 rust-analyzer.diagnostics.enable = false
 ```
 
-### Vscode
+### VSCode
 
-The Vscode extension is not ready yet but should be part of Bacon-ls 0.6.0.
+The extension can be configured using the VSCode interface.
 
 ## Troubleshooting
 
 `bacon-ls` 🐽 can produce a log file in the folder where its running by exporting the `RUST_LOG` variable in the shell:
+
+### Neovim
 
 ```bash
 ❯❯❯ export RUST_LOG=debug
 ❯❯❯ nvim src/some-file.rs
 # or
 ❯❯❯ RUST_LOG=debug nvim src/some-file.rs
+❯❯❯ tail -F ./bacon-ls.log
+```
+
+### VSCode
+
+Enable debug logging in the extension options.
+
+```bash
 ❯❯❯ tail -F ./bacon-ls.log
 ```
 
