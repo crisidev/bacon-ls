@@ -85,6 +85,7 @@ impl BaconLs {
                 )
                 .with_thread_names(true)
                 .with_span_events(FmtSpan::CLOSE)
+                .with_line_number(true)
                 .with_target(false)
                 .compact()
                 .init();
@@ -124,7 +125,16 @@ impl BaconLs {
                             None
                         }) {
                             if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, folder_path, uri)
+                                Self::parse_bacon_diagnostic_line(&line, uri)
+                            {
+                                diagnostics.push((path, diagnostic));
+                            }
+                            if let Some((path, diagnostic)) =
+                                Self::parse_bacon_diagnostic_line_with_spans(
+                                    &line,
+                                    folder_path,
+                                    uri,
+                                )
                             {
                                 diagnostics.push((path, diagnostic));
                             }
@@ -167,7 +177,55 @@ impl BaconLs {
         }
     }
 
-    fn parse_bacon_diagnostic_line(
+    fn parse_bacon_diagnostic_line(line: &str, uri: Option<&Url>) -> Option<(Url, Diagnostic)> {
+        let line_split: Vec<&str> = line.splitn(5, ':').collect();
+        if line_split.len() == 5 {
+            let severity = match line_split[0] {
+                "warning" => DiagnosticSeverity::WARNING,
+                "info" | "information" => DiagnosticSeverity::INFORMATION,
+                "hint" => DiagnosticSeverity::HINT,
+                _ => DiagnosticSeverity::ERROR,
+            };
+            let path = line_split[1];
+            let line = line_split[2].parse().unwrap_or(1);
+            let col = line_split[3].parse().unwrap_or(1);
+            match format!("file://{}", path).parse::<Url>() {
+                Ok(path) => {
+                    if uri.is_none() || Some(&path) == uri {
+                        let message = line_split[4].replace("\\n", "\n");
+                        tracing::debug!("new diagnostic: severity: {severity:?}, path: {path}, line: {line}, col: {col}, message: {message}");
+                        return Some((
+                            path,
+                            Diagnostic {
+                                range: Range::new(
+                                    Position::new((line - 1) as u32, col - 1),
+                                    Position::new((line - 1) as u32, col + 4),
+                                ),
+                                severity: Some(severity),
+                                source: Some(PKG_NAME.to_string()),
+                                message,
+                                ..Diagnostic::default()
+                            },
+                        ));
+                    } else {
+                        tracing::debug!(
+                            "request diagnostic file path doesn't match bacon file path"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("error parsing file {path} path: {e}")
+                }
+            }
+        } else {
+            tracing::error!(
+                "error extracting bacon diagnostic, malformed level:path:line:col:message"
+            );
+        }
+        None
+    }
+
+    fn parse_bacon_diagnostic_line_with_spans(
         line: &str,
         folder_path: &Path,
         uri: Option<&Url>,
@@ -420,6 +478,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     const ERROR_LINE: &str = "error:/app/github/bacon-ls/src/lib.rs:352:9:cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error";
+    const ERROR_LINE_WITH_SPANS: &str = "error:/app/github/bacon-ls/src/lib.rs:352:352:9:20:cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error";
 
     #[test]
     fn test_parse_bacon_diagnostic_line_ok() {
@@ -454,6 +513,43 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[test]
+    fn test_parse_bacon_diagnostic_line_with_spans_ok() {
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            ERROR_LINE_WITH_SPANS,
+            Path::new("/app/github/bacon-ls"),
+            None,
+        );
+        let (url, diagnostic) = result.unwrap();
+        assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
+        assert_eq!(
+            diagnostic.message,
+            r#"cannot find value `one` in this scope
+    |
+352 |         one
+    |         ^^^ help: a unit variant with a similar name exists: `None`
+    |
+   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5
+    |
+576 |     None,
+    |     ---- similarly named unit variant `None` defined here
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `bacon-ls` (lib) due to 1 previous error"#
+        );
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            ERROR_LINE_WITH_SPANS,
+            Path::new("/app/github/bacon-ls"),
+            Some(&Url::from_str("file:///app/github/bacon-ls/src/lib.rs").unwrap()),
+        );
+        let (url, diagnostic) = result.unwrap();
+        assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
+    }
+
+    #[test]
     fn test_parse_bacon_diagnostic_line_ko() {
         // Different path
         let result = BaconLs::parse_bacon_diagnostic_line(
@@ -479,6 +575,41 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         // Empty line
         let result = BaconLs::parse_bacon_diagnostic_line(
             "",
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_with_spans_ko() {
+        // Different path
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            ERROR_LINE_WITH_SPANS,
+            Path::new("/app/github/bacon-ls"),
+            Some(&Url::from_str("file:///app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Non parsable path
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            ERROR_LINE_WITH_SPANS,
+            Path::new("/app/github/bacon-ls"),
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Unparsable line
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            "warning:/file:1:1",
+            Path::new("/app/github/bacon-ls"),
+            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
+        );
+        assert_eq!(result, None);
+
+        // Empty line
+        let result = BaconLs::parse_bacon_diagnostic_line_with_spans(
+            "",
+            Path::new("/app/github/bacon-ls"),
             Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
         );
         assert_eq!(result, None);
