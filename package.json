@@ -21,6 +21,7 @@
     "Other"
   ],
   "engines": {
+    "node": "^20.18.0",
     "vscode": "^1.84.0"
   },
   "activationEvents": [
@@ -39,10 +40,48 @@
       "type": "object",
       "title": "BaconLs",
       "properties": {
-        "bacon_ls.path": {
+        "bacon-ls.path": {
           "scope": "machine-overridable",
           "type": "string",
           "description": "Path to the `bacon-ls` binary. If empty the bundled binary will be used."
+        },
+        "bacon-ls.locationsFile": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "description": "Bacon export filename.",
+          "default": ".bacon-locations"
+        },
+        "bacon-ls.updateOnSave": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "description": "Try to update diagnostics every time the file is saved.",
+          "default": true
+        },
+        "bacon-ls.updateOnSaveWaitMillis": {
+          "scope": "machine-overridable",
+          "type": "number",
+          "description": "How many milliseconds to wait before updating diagnostics after a save.",
+          "default": 1000
+        },
+        "bacon-ls.updateOnChange": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "description": "Try to update diagnostics every time the file changes.",
+          "default": false
+        },
+        "bacon-ls.logLevel": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "off",
+          "markdownDescription": "Logging level of the language server. Logs will be saved in a file called bacon-ls.log if the level is not 'off'."
         }
       }
     }

@@ -18,17 +18,17 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 <!-- vim-markdown-toc Marked -->
 
-* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
-* [Installation](#installation)
-    * [Mason.nvim](#mason.nvim)
-    * [Manual](#manual)
-* [Configuration](#configuration)
-    * [Neovim - LazyVim](#neovim---lazyvim)
-    * [Neovim - Manual](#neovim---manual)
-    * [Vscode](#vscode)
-* [Troubleshooting](#troubleshooting)
-* [How does it work?](#how-does-it-work?)
-* [Thanks](#thanks)
+- [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
+- [Installation](#installation)
+  - [Mason.nvim](#mason.nvim)
+  - [Manual](#manual)
+- [Configuration](#configuration)
+  - [Neovim - LazyVim](#neovim---lazyvim)
+  - [Neovim - Manual](#neovim---manual)
+  - [Vscode](#vscode)
+- [Troubleshooting](#troubleshooting)
+- [How does it work?](#how-does-it-work?)
+- [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
 
@@ -95,8 +95,7 @@ supports the following values:
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
 - `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
-- `updateOnChange` Try to update diagnostics every time the file changes (default: true).
-
+- `updateOnChange` Try to update diagnostics every time the file changes (default: false).
 
 ### Neovim - LazyVim
 

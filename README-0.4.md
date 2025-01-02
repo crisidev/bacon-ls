@@ -15,13 +15,13 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 <!-- vim-markdown-toc Marked -->
 
-* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
-* [Installation](#installation)
-* [Configuration](#configuration)
-    * [Neovim - LazyVim](#neovim---lazyvim)
-    * [Neovim - Manual](#neovim---manual)
-* [How does it work?](#how-does-it-work?)
-* [Thanks](#thanks)
+- [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Neovim - LazyVim](#neovim---lazyvim)
+  - [Neovim - Manual](#neovim---manual)
+- [How does it work?](#how-does-it-work?)
+- [Thanks](#thanks)
 
 <!-- vim-markdown-toc -->
 

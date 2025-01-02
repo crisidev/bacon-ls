@@ -13,7 +13,7 @@ let client: LanguageClient | undefined;
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  let name = "Typos";
+  let name = "Bacon-ls";
 
   const outputChannel = vscode.window.createOutputChannel(name);
 
@@ -25,21 +25,23 @@ export async function activate(
     vscode.workspace.onDidChangeConfiguration(
       async (e: vscode.ConfigurationChangeEvent) => {
         const restartTriggeredBy = [
-          "typos.config",
-          "typos.diagnosticSeverity",
-          "typos.logLevel",
-          "typos.path",
+          "bacon-ls.updateOnSave",
+          "bacon-ls.updateOnSaveWaitMillis",
+          "bacon-ls.updateOnChange",
+          "bacon-ls.locationsFile",
+          "bacon-ls.logLevel",
+          "bacon-ls.path",
         ].find((s) => e.affectsConfiguration(s));
 
         if (restartTriggeredBy) {
-          await vscode.commands.executeCommand("typos.restart");
+          await vscode.commands.executeCommand("bacon-ls.restart");
         }
       },
     ),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("typos.restart", async () => {
+    vscode.commands.registerCommand("bacon-ls.restart", async () => {
       // can't stop if the client has previously failed to start
       if (client && client.needsStop()) {
         await client.stop();
@@ -63,7 +65,7 @@ export async function activate(
   // the client and server. This ensures at activation time we
   // start and handle errors in a way that's consistent with the
   // other triggers
-  await vscode.commands.executeCommand("typos.restart");
+  await vscode.commands.executeCommand("bacon-ls.restart");
 }
 
 async function createClient(
@@ -73,10 +75,10 @@ async function createClient(
 ): Promise<LanguageClient> {
   const env = { ...process.env };
 
-  let config = vscode.workspace.getConfiguration("typos");
+  let config = vscode.workspace.getConfiguration("bacon-ls");
   let path = await getServerPath(context, config);
 
-  outputChannel.appendLine("Using typos server " + path);
+  outputChannel.appendLine("Using bacon-ls server " + path);
 
   env.RUST_LOG = config.get("logLevel");
 
@@ -102,8 +104,10 @@ async function createClient(
     outputChannel: outputChannel,
     traceOutputChannel: outputChannel,
     initializationOptions: {
-      config: config.get("config") ? config.get("config") : null,
-      diagnosticSeverity: config.get("diagnosticSeverity"),
+      updateOnSave: config.get("updateOnSave"),
+      updateOnSaveWaitMillis: config.get("updateOnSaveWaitMillis"),
+      updateOnChange: config.get("updateOnChange"),
+      locationsFile: config.get("locationsFile"),
     },
   };
 
@@ -119,7 +123,7 @@ async function getServerPath(
   context: vscode.ExtensionContext,
   config: vscode.WorkspaceConfiguration,
 ): Promise<string> {
-  let path = process.env.TYPOS_LSP_PATH ?? config.get<null | string>("path");
+  let path = process.env.BACON_LS_PATH ?? config.get<null | string>("path");
 
   if (path) {
     if (path.startsWith("~/")) {
@@ -131,19 +135,17 @@ async function getServerPath(
       () => pathUri.fsPath,
       () => {
         throw new Error(
-          `${path} does not exist. Please check typos.path in Settings.`,
+          `${path} does not exist. Please check bacon-ls.path in Settings.`,
         );
       },
     );
   }
 
-  //if (config.package.releaseTag === null) return "typos-lsp";
-
   const ext = process.platform === "win32" ? ".exe" : "";
   const bundled = vscode.Uri.joinPath(
     context.extensionUri,
     "bundled",
-    `typos-lsp${ext}`,
+    `bacon-ls${ext}`,
   );
 
   return await vscode.workspace.fs.stat(bundled).then(
@@ -151,8 +153,8 @@ async function getServerPath(
     () => {
       throw new Error(
         "Unfortunately we don't ship binaries for your platform yet. " +
-          "Try specifying typos.path in Settings. " +
-          "Or raise an issue [here](https://github.com/tekumara/typos-lsp/issues) " +
+          "Try specifying bacon-ls.path in Settings. " +
+          "Or raise an issue [here](https://github.com/crisidev/bacon-ls/issues) " +
           "to request a binary for your platform.",
       );
     },
