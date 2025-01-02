@@ -3,7 +3,7 @@
   "displayName": "Bacon Language Server",
   "description": "Rust diagnostic based on Bacon",
   "publisher": "crisidev",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "icon": "img/icon.png",
   "repository": {
