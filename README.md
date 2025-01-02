@@ -20,9 +20,12 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 * [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
 * [Installation](#installation)
+    * [Mason.nvim](#mason.nvim)
+    * [Manual](#manual)
 * [Configuration](#configuration)
     * [Neovim - LazyVim](#neovim---lazyvim)
     * [Neovim - Manual](#neovim---manual)
+    * [Vscode](#vscode)
 * [Troubleshooting](#troubleshooting)
 * [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
@@ -47,6 +50,16 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ## Installation
 
+### Mason.nvim
+
+Both Bacon and Bacon-ls are installable via [mason.nvim](https://github.com/williamboman/mason.nvim):
+
+```bash
+:MasonInstall bacon bacon-ls
+```
+
+### Manual
+
 First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` 🐽
 
 ```bash
@@ -56,6 +69,8 @@ bacon 3.7.0  # make sure you have at least 3.7.0
 ❯❯❯ bacon-ls --version
 0.5.0        # make sure you have at least 0.5.0
 ```
+
+## Configuration
 
 Configure Bacon export settings with `bacon-ls` 🐽 export format and proper span support in `~/.config/bacon/prefs.toml`:
 
@@ -74,54 +89,19 @@ path = ".bacon-locations"
 
 **NOTE: `bacon` MUST be running to generate the export locations with the `bacon-ls` job: `bacon -j bacon-ls`.**
 
-## Configuration
-
 The language server can be configured using the appropriate LSP protocol and
 supports the following values:
 
-- `locationsFile` Bacon export filename, default `.bacon-locations`.
-- `waitTimeSeconds` Maximum time in seconds the LSP server waits for Bacon to
-  update the export file before loading the new diagnostics, default `10`.
+- `locationsFile` Bacon export filename (default: `.bacon-locations`).
+- `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
+- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
+- `updateOnChange` Try to update diagnostics every time the file changes (default: true).
+
 
 ### Neovim - LazyVim
 
 ```lua
-return {
-    {
-        "neovim/nvim-lspconfig",
-        opts = {
-            diagnostics = {
-                update_in_insert = true,
-            },
-        },
-        setup = {
-            bacon_ls = function()
-                require("lspconfig").bacon_ls.setup({
-                    init_options = {
-                        -- try to update diagnostics every time the file is saved (default: true)
-                        updateOnSave = true
-                        -- how many milliseconds to wait before updating diagnostics after a save (default: 1000)
-                        updateOnSaveWaitMillis = 1000
-                        -- try to update diagnostics every time the file changes (default: true)
-                        updateOnChange = true
-                    }
-                })
-                return true
-            end,
-        }
-    },
-    {
-        "mrcjkb/rustaceanvim",
-        opts = {
-            default_settings = {
-                ["rust-analyzer"] = {
-                    diagnostics = { enable = false },
-                    checkOnSave = { enable = false },
-                },
-            },
-        },
-    },
-}
+vim.g.lazyvim_rust_diagnostics = "bacon-ls"
 ```
 
 ### Neovim - Manual
@@ -139,11 +119,8 @@ is set to `true`.
 ```lua
 require("lspconfig").bacon_ls.setup({
     init_options = {
-        -- try to update diagnostics every time the file is saved (default: true)
         updateOnSave = true
-        -- how many milliseconds to wait before updating diagnostics after a save (default: 1000)
         updateOnSaveWaitMillis = 1000
-        -- try to update diagnostics every time the file changes (default: true)
         updateOnChange = true
     }
 })
@@ -155,6 +132,10 @@ For `rust-analyzer`, these 2 options must be turned off:
 rust-analyzer.checkOnSave.enable = false
 rust-analyzer.diagnostics.enable = false
 ```
+
+### Vscode
+
+The Vscode extension is not ready yet but should be part of Bacon-ls 0.6.0.
 
 ## Troubleshooting
 
