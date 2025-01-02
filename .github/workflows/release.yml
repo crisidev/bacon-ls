@@ -130,6 +130,3 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: dist/**/*
-      - name: Setup tmate session
-        if: ${{ failure() }}
-        uses: mxschmitt/action-tmate@v3
