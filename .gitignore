@@ -8,3 +8,4 @@ node_modules
 target/
 bundled/
 vscode/extension.js.*
+bacon-ls.log
