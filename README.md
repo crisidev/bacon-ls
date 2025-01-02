@@ -78,12 +78,12 @@ return {
                 update_in_insert = true,
             },
         },
-        setup = { 
+        setup = {
             bacon_ls = function()
                 require("lspconfig").bacon_ls.setup({
                     init_options = {
                         spawnBacon = true,
-                        spawnBaconCommand = "bacon clippy -- --all-features"
+                        spawnBaconCommand = "bacon clippy -- --all-features",
                         updateOnSave = true
                     }
                 })
