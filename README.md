@@ -211,5 +211,6 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from 0.6.0
 - ✅ VSCode extension published available on Marketplace
 - 🕖 Add `bacon-ls` to `bacon` website - https://github.com/Canop/bacon/pull/289
+- ✅ Smarter handling of parsing the Bacon locations file
+- ✅ Faster response after a save event
 - 🌍 Emacs configuration
-- 🌍 Smarter handling of parsing the Bacon locations file
