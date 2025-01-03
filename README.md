@@ -23,7 +23,7 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
     * [VSCode](#vscode)
     * [Coc.nvim](#coc.nvim)
 * [Troubleshooting](#troubleshooting)
-    * [Neovim](#neovim)
+    * [Vim/Neovim](#vim--neovim)
     * [VSCode](#vscode)
 * [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
@@ -202,12 +202,14 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic`
 - ✅ Manual Neovim configuration
 - ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
-- 🕖 Automatic NeoVim configuration
+- ✅ Automatic NeoVim configuration
   - ✅ Add `bacon-ls` to [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) - https://github.com/neovim/nvim-lspconfig/pull/3160
   - ✅ Add `bacon` and `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) - https://github.com/mason-org/mason-registry/pull/5774
   - ✅ Add `bacon-ls` to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua) - https://github.com/LazyVim/LazyVim/pull/3212
 - ✅ Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations - https://github.com/Canop/bacon/pull/187 https://github.com/Canop/bacon/pull/188
-- ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from Bacon 3.7
+- ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from `bacon` 3.7 and `bacon-ls` 0.6.0
 - ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from 0.6.0
 - ✅ VSCode extension published available on Marketplace
+- 🕖 Add `bacon-ls` to `bacon` website - https://github.com/Canop/bacon/pull/289
 - 🌍 Emacs configuration
+- 🌍 Smarter handling of parsing the Bacon locations file
