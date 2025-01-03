@@ -5,8 +5,9 @@
 [![Crates.io](https://img.shields.io/crates/v/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/crisidev/bacon-ls/blob/main/LICENSE)
 
-LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
+**Are you tired of [rust-analyzer](https://rust-analyzer.github.io/) diagnostics being slow?**
 
+LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
 
 ![Bacon screenshot](./img/screenshot.png)
 
@@ -134,6 +135,11 @@ rust-analyzer.diagnostics.enable = false
 ### VSCode
 
 The extension can be configured using the VSCode settings interface.
+
+**It is very important that rust-analyzer `Check On Save` and `Diagnostics` are disabled for `bacon-ls` to work properly:**
+
+* Untick `Rust-analyzer -> general -> Check On Save`
+* Untick `Rust-analyzer -> diagnostics -> Enable`
 
 ### Coc.nvim
 
