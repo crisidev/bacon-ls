@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    ignore:
+      - dependency-name: "bacon-ls*"
+    groups:
+      lsp:
+        applies-to: version-updates
+        patterns:
+         - "*"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      vscode:
+        applies-to: version-updates
+        patterns:
+         - "*"
+    ignore:
+      # this needs to match engines.vscode and defines the minimum version of vscode
+      - dependency-name: '@types/vscode'
