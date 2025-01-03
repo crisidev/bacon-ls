@@ -157,13 +157,13 @@ call coc#config('languageserver', {
 
 `bacon-ls` 🐽 can produce a log file in the folder where its running by exporting the `RUST_LOG` variable in the shell:
 
-### Neovim
+### Vim / Neovim
 
 ```bash
 ❯❯❯ export RUST_LOG=debug
-❯❯❯ nvim src/some-file.rs
-# or
-❯❯❯ RUST_LOG=debug nvim src/some-file.rs
+❯❯❯ nvim src/some-file.rs                 # or vim src/some-file.rs
+# the variable can also be exported for the current command and not for the whole shell
+❯❯❯ RUST_LOG=debug nvim src/some-file.rs  # or RUST_LOG=debug vim src/some-file.rs
 ❯❯❯ tail -F ./bacon-ls.log
 ```
 
