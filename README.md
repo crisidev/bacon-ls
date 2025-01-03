@@ -53,7 +53,7 @@ The VSCode extension is available on both VSCE and OVSX:
 
 Both Bacon and Bacon-ls are installable via [mason.nvim](https://github.com/williamboman/mason.nvim):
 
-```bash
+```vim
 :MasonInstall bacon bacon-ls
 ```
 
