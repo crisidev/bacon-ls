@@ -1,18 +1,20 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use tower_lsp::{
     jsonrpc,
     lsp_types::{
-        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-        ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
-        TextDocumentSyncKind,
+        CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
+        CodeActionProviderCapability, CodeActionResponse, DidChangeTextDocumentParams,
+        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+        InitializeParams, InitializeResult, InitializedParams, MessageType, PositionEncodingKind,
+        PublishDiagnosticsClientCapabilities, ServerCapabilities, ServerInfo,
+        TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+        WorkDoneProgressOptions, WorkspaceEdit,
     },
     LanguageServer,
 };
 
-use crate::{BaconLs, PKG_NAME, PKG_VERSION};
+use crate::{BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -76,6 +78,15 @@ impl LanguageServer for BaconLs {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: Some(false),
+                        },
+                        resolve_provider: None,
+                    },
+                )),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -125,6 +136,65 @@ impl LanguageServer for BaconLs {
         if update_on_change {
             self.publish_diagnostics(&params.text_document.uri).await;
         }
+    }
+
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> jsonrpc::Result<Option<CodeActionResponse>> {
+        tracing::debug!("code_action: {params:?}");
+
+        let actions = params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.source == Some("bacon-ls".to_string()))
+            .flat_map(|diag| match &diag.data {
+                Some(data) => {
+                    if let Ok(DiagnosticData { corrections }) =
+                        serde_json::from_value::<DiagnosticData>(data.clone())
+                    {
+                        corrections
+                            .iter()
+                            .map(|c| {
+                                CodeActionOrCommand::CodeAction(CodeAction {
+                                    title: "Replace with clippy suggestion".to_string(),
+                                    kind: Some(CodeActionKind::QUICKFIX),
+                                    diagnostics: Some(vec![diag.clone()]),
+                                    edit: Some(WorkspaceEdit {
+                                        changes: Some(HashMap::from([(
+                                            params.text_document.uri.clone(),
+                                            vec![TextEdit {
+                                                range: diag.range,
+                                                new_text: c.to_string(),
+                                            }],
+                                        )])),
+                                        ..WorkspaceEdit::default()
+                                    }),
+                                    is_preferred: if corrections.len() == 1 {
+                                        Some(true)
+                                    } else {
+                                        None
+                                    },
+                                    ..CodeAction::default()
+                                })
+                            })
+                            .collect()
+                    } else {
+                        tracing::error!(
+                            "deserialization failed: received {data:?} as diagnostic data",
+                        );
+                        vec![]
+                    }
+                }
+                None => {
+                    tracing::warn!("client doesn't support diagnostic data");
+                    vec![]
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(Some(actions))
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {

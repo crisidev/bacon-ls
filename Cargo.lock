@@ -103,10 +103,12 @@ dependencies = [
 
 [[package]]
 name = "bacon-ls"
-version = "0.7.0"
+version = "0.8.0-dev"
 dependencies = [
  "argh",
  "pretty_assertions",
+ "serde",
+ "serde_json",
  "tempdir",
  "tokio",
  "tower-lsp",

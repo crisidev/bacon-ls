@@ -1,4 +1,5 @@
 //! Bacon Language Server
+use std::borrow::Cow;
 use std::env;
 use std::path::Path;
 use std::time::Duration;
@@ -46,6 +47,11 @@ impl Default for State {
             update_on_change: true,
         }
     }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DiagnosticData<'c> {
+    corrections: Vec<Cow<'c, str>>,
 }
 
 #[derive(Debug, Default)]
@@ -101,7 +107,9 @@ impl BaconLs {
         let locations_file = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
+
         let mut diagnostics: Vec<(Url, Diagnostic)> = vec![];
+
         if let Some(workspace_folders) = workspace_folders.as_ref() {
             for folder in workspace_folders.iter() {
                 let folder_path = Path::new(folder.uri.path());
@@ -111,6 +119,8 @@ impl BaconLs {
                     Ok(fd) => {
                         let reader = BufReader::new(fd);
                         let mut lines = reader.lines();
+                        let mut buffer = String::new();
+
                         while let Some(line) = lines.next_line().await.unwrap_or_else(|e| {
                             tracing::error!(
                                 "error reading line from file {}: {e}",
@@ -118,19 +128,52 @@ impl BaconLs {
                             );
                             None
                         }) {
-                            if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, folder_path, uri)
-                            {
-                                if !diagnostics.iter().any(
-                                    |(existing_path, existing_diagnostic)| {
-                                        existing_path.path() == path.path()
-                                            && diagnostic.range == existing_diagnostic.range
-                                            && diagnostic.severity == existing_diagnostic.severity
-                                            && diagnostic.message == existing_diagnostic.message
-                                    },
-                                ) {
-                                    diagnostics.push((path, diagnostic));
+                            let trimmed = line.trim_end();
+
+                            // Use the first word to determine the start of a new diagnostic
+                            let is_new_diagnostic = trimmed.starts_with("warning")
+                                || trimmed.starts_with("error")
+                                || trimmed.starts_with("info")
+                                || trimmed.starts_with("note")
+                                || trimmed.starts_with("failure-note")
+                                || trimmed.starts_with("help");
+
+                            if is_new_diagnostic {
+                                // Process the collected buffer before starting a new entry
+                                if !buffer.is_empty() {
+                                    if let Some((path, diagnostic)) =
+                                        Self::parse_bacon_diagnostic_line(&buffer, folder_path)
+                                    {
+                                        Self::deduplicate_diagnostics(
+                                            path,
+                                            uri,
+                                            diagnostic,
+                                            &mut diagnostics,
+                                        );
+                                    }
                                 }
+                                // Reset buffer for new diagnostic entry
+                                buffer.clear();
+                            }
+
+                            // Append current line to buffer
+                            if !buffer.is_empty() {
+                                buffer.push('\n'); // Preserve multiline structure
+                            }
+                            buffer.push_str(trimmed);
+                        }
+
+                        // Flush the remaining buffer after loop ends
+                        if !buffer.is_empty() {
+                            if let Some((path, diagnostic)) =
+                                Self::parse_bacon_diagnostic_line(&buffer, folder_path)
+                            {
+                                Self::deduplicate_diagnostics(
+                                    path,
+                                    uri,
+                                    diagnostic,
+                                    &mut diagnostics,
+                                );
                             }
                         }
                     }
@@ -140,7 +183,28 @@ impl BaconLs {
                 }
             }
         }
+
         diagnostics
+    }
+
+    fn deduplicate_diagnostics(
+        path: Url,
+        uri: Option<&Url>,
+        diagnostic: Diagnostic,
+        diagnostics: &mut Vec<(Url, Diagnostic)>,
+    ) {
+        if Some(&path) == uri
+            && !diagnostics
+                .iter()
+                .any(|(existing_path, existing_diagnostic)| {
+                    existing_path.path() == path.path()
+                        && diagnostic.range == existing_diagnostic.range
+                        && diagnostic.severity == existing_diagnostic.severity
+                        && diagnostic.message == existing_diagnostic.message
+                })
+        {
+            diagnostics.push((path, diagnostic));
+        }
     }
 
     async fn diagnostics_vec(&self, uri: Option<&Url>) -> Vec<Diagnostic> {
@@ -162,7 +226,7 @@ impl BaconLs {
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
         match severity_str {
             "warning" => DiagnosticSeverity::WARNING,
-            "info" | "information" | "note" => DiagnosticSeverity::INFORMATION,
+            "info" | "information" | "note" | "failure-note" => DiagnosticSeverity::INFORMATION,
             "hint" | "help" => DiagnosticSeverity::HINT,
             _ => DiagnosticSeverity::ERROR,
         }
@@ -176,27 +240,13 @@ impl BaconLs {
         Some((line_start, line_end, column_start, column_end))
     }
 
-    fn remove_none_suffix(s: &mut String) {
-        let suffix = " none";
-        if s.ends_with(suffix) {
-            // Calculate the position where the suffix starts
-            let new_len = s.len() - suffix.len();
-            // Truncate the string to this new length, effectively removing the suffix
-            s.truncate(new_len);
-        }
-    }
-
-    fn parse_bacon_diagnostic_line(
-        line: &str,
-        folder_path: &Path,
-        uri: Option<&Url>,
-    ) -> Option<(Url, Diagnostic)> {
+    fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
         // Split line into parts; expect exactly 7 parts in the format specified.
-        let line_split: Vec<_> = line.splitn(7, ':').collect();
+        let line_split: Vec<_> = line.splitn(8, ':').collect();
 
-        if line_split.len() != 7 {
+        if line_split.len() != 8 {
             tracing::error!(
-                "malformed line: expected 7 parts in the format of `severity:path:line_start:line_end:column_start:column_end:message` but found {}: {}",
+                "malformed line: expected 8 parts in the format of `severity:path:line_start:line_end:column_start:column_end:message:replacement` but found {}: {}",
                 line_split.len(),
                 line
             );
@@ -225,14 +275,20 @@ impl BaconLs {
             }
         };
 
-        // Check URI match
-        if uri.is_some() && Some(&path) != uri {
-            tracing::debug!("URI mismatch: expected {:?}, found {:?}", uri, path);
-            return None;
-        }
-
         let mut message = line_split[6].replace("\\n", "\n");
-        Self::remove_none_suffix(&mut message);
+        let replacement = line_split[7].replace("\\n", "\n");
+        let data = if replacement != "none" {
+            tracing::debug!(
+                "storing potential quick fix code action to replace word with {replacement}"
+            );
+            message.push_str(": ");
+            message.push_str(&replacement);
+            Some(serde_json::json!(DiagnosticData {
+                corrections: vec![replacement.into()]
+            }))
+        } else {
+            None
+        };
 
         tracing::debug!(
             "new diagnostic: severity: {severity:?}, path: {path:?}, line_start: {line_start}, line_end: {line_end}, column_start: {column_start}, column_end: {column_end}, message: {message}",
@@ -247,6 +303,7 @@ impl BaconLs {
             severity: Some(severity),
             source: Some(PKG_NAME.to_string()),
             message,
+            data,
             ..Diagnostic::default()
         };
 
@@ -267,11 +324,8 @@ mod tests {
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            None,
-        );
+        let result =
+            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -281,7 +335,7 @@ mod tests {
             r#"cannot find value `one` in this scope
     |
 352 |         one
-    |         ^^^ help: a unit variant with a similar name exists: `None`
+    |         ^^^ help:  a unit variant with a similar name exists: `None`
     |
    ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5
     |
@@ -291,11 +345,8 @@ mod tests {
 For more information about this error, try `rustc --explain E0425`.
 error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         );
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("file:///app/github/bacon-ls/src/lib.rs").unwrap()),
-        );
+        let result =
+            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -304,36 +355,15 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ko() {
-        // Different path
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("file:///app/github/bacon-ls/src/main.rs").unwrap()),
-        );
-        assert_eq!(result, None);
-
-        // Non parsable path
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
-        );
-        assert_eq!(result, None);
-
         // Unparsable line
         let result = BaconLs::parse_bacon_diagnostic_line(
             "warning:/file:1:1",
             Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
         );
         assert_eq!(result, None);
 
         // Empty line
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            "",
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
-        );
+        let result = BaconLs::parse_bacon_diagnostic_line("", Path::new("/app/github/bacon-ls"));
         assert_eq!(result, None);
     }
 
@@ -350,23 +380,23 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope"
+            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
         )
         .unwrap();
         // duplicate the line
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope"
+            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "warning:{error_path}:354:354:9:20:cannot find value `two` in this scope"
+            "warning:{error_path}:354:354:9:20:cannot find value `two` in this scope:some"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "help:{error_path}:356:356:9:20:cannot find value `three` in this scope"
+            "help:{error_path}:356:356:9:20:cannot find value `three` in this scope:some other"
         )
         .unwrap();
 

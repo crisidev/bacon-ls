@@ -13,6 +13,8 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
 
 <!-- vim-markdown-toc Marked -->
 
+* [Features](#features)
+    * [Limitations](#limitations)
 * [Installation](#installation)
     * [VSCode](#vscode)
     * [Mason.nvim](#mason.nvim)
@@ -31,7 +33,7 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
 
 <!-- vim-markdown-toc -->
 
-**NOTE: bacon-ls 0.5 has breaking changes and will work only with bacon 3.7+. The README for bacon-ls 0.4
+**NOTE: bacon-ls 0.5+ has breaking changes and will work only with bacon 3.7+. The README for bacon-ls 0.4
 can be found [here](./README-0.4.md).**
 
 See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
@@ -40,6 +42,20 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ![Bacon gif](./img/bacon-ls.gif)
 
+## Features
+
+* Read diagnostics from produced by Bacon.
+* Push diagnostics to the LSP client on certain events like saving or files changes.
+* Precise diagnostics positions.
+* Ability to react to changes over document saves and changes that can be configured.
+* Replacement code actions as suggested by `clippy`.
+
+### Limitations
+
+* Diagnostics are only synced to the currently open file - [#11](https://github.com/crisidev/bacon-ls/issues/11)
+    * To sync diagnostics to other files, the files must be open and saved or changed.
+* Windows support is not tested and probably broken - [#10](https://github.com/crisidev/bacon-ls/issues/10)
+
 ## Installation
 
 ### VSCode
@@ -47,6 +63,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 First, install [Bacon](https://dystroy.org/bacon/#installation).
 
 The VSCode extension is available on both VSCE and OVSX:
+
 * `VSCE` [https://marketplace.visualstudio.com/items?itemName=MatteoBigoi.bacon-ls-vscode](https://marketplace.visualstudio.com/items?itemName=MatteoBigoi.bacon-ls-vscode)
 * `OVSX` [https://open-vsx.org/extension/MatteoBigoi/bacon-ls-vscode](https://open-vsx.org/extension/MatteoBigoi/bacon-ls-vscode)
 
@@ -67,7 +84,7 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.7.0  # make sure you have at least 3.7.0
 ❯❯❯ bacon-ls --version
-0.5.0        # make sure you have at least 0.5.0
+0.8.0        # make sure you have at least 0.5.0
 ```
 
 ## Configuration
@@ -83,7 +100,7 @@ need_stdout = true
 [exports.cargo-json-spans]
 auto = true
 exporter = "analyzer"
-line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{span.column_start}:{span.column_end}:{diagnostic.message} {span.suggested_replacement}"
+line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{span.column_start}:{span.column_end}:{diagnostic.message}:{span.suggested_replacement}"
 path = ".bacon-locations"
 ```
 
@@ -213,4 +230,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - 🕖 Add `bacon-ls` to `bacon` website - https://github.com/Canop/bacon/pull/289
 - ✅ Smarter handling of parsing the Bacon locations file
 - ✅ Faster response after a save event
+- ✅ Replacement code actions
 - 🌍 Emacs configuration
