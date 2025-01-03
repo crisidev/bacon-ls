@@ -158,7 +158,7 @@ impl LanguageServer for BaconLs {
                             .iter()
                             .map(|c| {
                                 CodeActionOrCommand::CodeAction(CodeAction {
-                                    title: format!("Replace with {c}"),
+                                    title: "Replace with clippy suggestion".to_string(),
                                     kind: Some(CodeActionKind::QUICKFIX),
                                     diagnostics: Some(vec![diag.clone()]),
                                     edit: Some(WorkspaceEdit {

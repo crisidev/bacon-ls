@@ -107,7 +107,9 @@ impl BaconLs {
         let locations_file = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
+
         let mut diagnostics: Vec<(Url, Diagnostic)> = vec![];
+
         if let Some(workspace_folders) = workspace_folders.as_ref() {
             for folder in workspace_folders.iter() {
                 let folder_path = Path::new(folder.uri.path());
@@ -117,6 +119,8 @@ impl BaconLs {
                     Ok(fd) => {
                         let reader = BufReader::new(fd);
                         let mut lines = reader.lines();
+                        let mut buffer = String::new();
+
                         while let Some(line) = lines.next_line().await.unwrap_or_else(|e| {
                             tracing::error!(
                                 "error reading line from file {}: {e}",
@@ -124,22 +128,52 @@ impl BaconLs {
                             );
                             None
                         }) {
-                            if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, folder_path)
-                            {
-                                if Some(&path) == uri
-                                    && !diagnostics.iter().any(
-                                        |(existing_path, existing_diagnostic)| {
-                                            existing_path.path() == path.path()
-                                                && diagnostic.range == existing_diagnostic.range
-                                                && diagnostic.severity
-                                                    == existing_diagnostic.severity
-                                                && diagnostic.message == existing_diagnostic.message
-                                        },
-                                    )
-                                {
-                                    diagnostics.push((path, diagnostic));
+                            let trimmed = line.trim_end();
+
+                            // Use the first word to determine the start of a new diagnostic
+                            let is_new_diagnostic = trimmed.starts_with("warning")
+                                || trimmed.starts_with("error")
+                                || trimmed.starts_with("info")
+                                || trimmed.starts_with("note")
+                                || trimmed.starts_with("failure-note")
+                                || trimmed.starts_with("help");
+
+                            if is_new_diagnostic {
+                                // Process the collected buffer before starting a new entry
+                                if !buffer.is_empty() {
+                                    if let Some((path, diagnostic)) =
+                                        Self::parse_bacon_diagnostic_line(&buffer, folder_path)
+                                    {
+                                        Self::deduplicate_diagnostics(
+                                            path,
+                                            uri,
+                                            diagnostic,
+                                            &mut diagnostics,
+                                        );
+                                    }
                                 }
+                                // Reset buffer for new diagnostic entry
+                                buffer.clear();
+                            }
+
+                            // Append current line to buffer
+                            if !buffer.is_empty() {
+                                buffer.push('\n'); // Preserve multiline structure
+                            }
+                            buffer.push_str(trimmed);
+                        }
+
+                        // Flush the remaining buffer after loop ends
+                        if !buffer.is_empty() {
+                            if let Some((path, diagnostic)) =
+                                Self::parse_bacon_diagnostic_line(&buffer, folder_path)
+                            {
+                                Self::deduplicate_diagnostics(
+                                    path,
+                                    uri,
+                                    diagnostic,
+                                    &mut diagnostics,
+                                );
                             }
                         }
                     }
@@ -149,7 +183,28 @@ impl BaconLs {
                 }
             }
         }
+
         diagnostics
+    }
+
+    fn deduplicate_diagnostics(
+        path: Url,
+        uri: Option<&Url>,
+        diagnostic: Diagnostic,
+        diagnostics: &mut Vec<(Url, Diagnostic)>,
+    ) {
+        if Some(&path) == uri
+            && !diagnostics
+                .iter()
+                .any(|(existing_path, existing_diagnostic)| {
+                    existing_path.path() == path.path()
+                        && diagnostic.range == existing_diagnostic.range
+                        && diagnostic.severity == existing_diagnostic.severity
+                        && diagnostic.message == existing_diagnostic.message
+                })
+        {
+            diagnostics.push((path, diagnostic));
+        }
     }
 
     async fn diagnostics_vec(&self, uri: Option<&Url>) -> Vec<Diagnostic> {
@@ -171,7 +226,7 @@ impl BaconLs {
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
         match severity_str {
             "warning" => DiagnosticSeverity::WARNING,
-            "info" | "information" | "note" => DiagnosticSeverity::INFORMATION,
+            "info" | "information" | "note" | "failure-note" => DiagnosticSeverity::INFORMATION,
             "hint" | "help" => DiagnosticSeverity::HINT,
             _ => DiagnosticSeverity::ERROR,
         }
@@ -220,12 +275,14 @@ impl BaconLs {
             }
         };
 
-        let message = line_split[6].replace("\\n", "\n");
+        let mut message = line_split[6].replace("\\n", "\n");
         let replacement = line_split[7].replace("\\n", "\n");
         let data = if replacement != "none" {
             tracing::debug!(
                 "storing potential quick fix code action to replace word with {replacement}"
             );
+            message.push_str(": ");
+            message.push_str(&replacement);
             Some(serde_json::json!(DiagnosticData {
                 corrections: vec![replacement.into()]
             }))
@@ -278,7 +335,7 @@ mod tests {
             r#"cannot find value `one` in this scope
     |
 352 |         one
-    |         ^^^ help: a unit variant with a similar name exists: `None`
+    |         ^^^ help:  a unit variant with a similar name exists: `None`
     |
    ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5
     |
@@ -323,23 +380,23 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope"
+            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
         )
         .unwrap();
         // duplicate the line
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope"
+            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "warning:{error_path}:354:354:9:20:cannot find value `two` in this scope"
+            "warning:{error_path}:354:354:9:20:cannot find value `two` in this scope:some"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "help:{error_path}:356:356:9:20:cannot find value `three` in this scope"
+            "help:{error_path}:356:356:9:20:cannot find value `three` in this scope:some other"
         )
         .unwrap();
 
