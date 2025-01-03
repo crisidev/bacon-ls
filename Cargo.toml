@@ -35,7 +35,5 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 ] }
 
 [dev-dependencies]
-test-log = { version = "0.2.16", features = ["trace"] }
-httparse = "1.9.5"
-similar-asserts = "1.6.0"
 pretty_assertions = "1.4.1"
+tempdir = "0.3.7"

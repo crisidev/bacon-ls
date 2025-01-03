@@ -23,7 +23,7 @@ LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) expos
     * [VSCode](#vscode)
     * [Coc.nvim](#coc.nvim)
 * [Troubleshooting](#troubleshooting)
-    * [Vim/Neovim](#vim--neovim)
+    * [Vim - Neovim](#vim---neovim)
     * [VSCode](#vscode)
 * [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
@@ -83,7 +83,7 @@ need_stdout = true
 [exports.cargo-json-spans]
 auto = true
 exporter = "analyzer"
-line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{span.column_start}:{span.column_end}:{diagnostic.message}"
+line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{span.column_start}:{span.column_end}:{diagnostic.message} {span.suggested_replacement}"
 path = ".bacon-locations"
 ```
 
@@ -163,7 +163,7 @@ call coc#config('languageserver', {
 
 `bacon-ls` 🐽 can produce a log file in the folder where its running by exporting the `RUST_LOG` variable in the shell:
 
-### Vim / Neovim
+### Vim - Neovim
 
 ```bash
 ❯❯❯ export RUST_LOG=debug
