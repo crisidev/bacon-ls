@@ -137,12 +137,10 @@ jobs:
           ls -al dist/*
           npx glob dist/**/*.vsix
       - name: vsce publish
-        continue-on-error: true
         run: npx vsce publish --packagePath $(npx glob dist/**/*.vsix)
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: ovsx publish
-        continue-on-error: true
         run: npx ovsx publish --packagePath $(npx glob dist/**/*.vsix)
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
