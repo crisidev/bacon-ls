@@ -2,7 +2,7 @@
   "name": "bacon-ls-vscode",
   "displayName": "Bacon Language Server",
   "description": "Rust diagnostic based on Bacon",
-  "publisher": "crisidev",
+  "publisher": "MatteoBigoi",
   "version": "0.6.0",
   "private": true,
   "icon": "img/icon.png",
