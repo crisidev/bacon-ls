@@ -5,20 +5,13 @@
 [![Crates.io](https://img.shields.io/crates/v/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/crisidev/bacon-ls/blob/main/LICENSE)
 
-**NOTE: bacon-ls 0.5 has breaking changes and will work only with bacon 3.7+. The README for bacon-ls 0.4
-can be found [here](./README-0.4.md).**
-
 LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
 
-See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ![Bacon screenshot](./img/screenshot.png)
 
-`bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
+<!-- vim-markdown-toc Marked -->
 
-
-
-* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
 * [Installation](#installation)
     * [VSCode](#vscode)
     * [Mason.nvim](#mason.nvim)
@@ -27,27 +20,22 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
     * [Neovim - LazyVim](#neovim---lazyvim)
     * [Neovim - Manual](#neovim---manual)
     * [VSCode](#vscode)
+    * [Coc.nvim](#coc.nvim)
 * [Troubleshooting](#troubleshooting)
     * [Neovim](#neovim)
     * [VSCode](#vscode)
 * [How does it work?](#how-does-it-work?)
 * [Thanks](#thanks)
+* [Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future](#roadmap-to-1.0---✅-done-🕖-in-progress-🌍-future)
 
 <!-- vim-markdown-toc -->
-## Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future
 
-- ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic`
-- ✅ Manual Neovim configuration
-- ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
-- 🕖 Automatic NeoVim configuration
-  - ✅ Add `bacon-ls` to [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) - https://github.com/neovim/nvim-lspconfig/pull/3160
-  - ✅ Add `bacon` and `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) - https://github.com/mason-org/mason-registry/pull/5774
-  - ✅ Add `bacon-ls` to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua) - https://github.com/LazyVim/LazyVim/pull/3212
-- ✅ Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations - https://github.com/Canop/bacon/pull/187 https://github.com/Canop/bacon/pull/188
-- ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from Bacon 3.7
-- ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from v0.6.0
-- 🌍 VSCode extension published available on Marketplace
-- 🌍 Emacs configuration
+**NOTE: bacon-ls 0.5 has breaking changes and will work only with bacon 3.7+. The README for bacon-ls 0.4
+can be found [here](./README-0.4.md).**
+
+See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
+
+`bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
 
 ![Bacon gif](./img/bacon-ls.gif)
 
@@ -55,8 +43,11 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ### VSCode
 
-Until the extension is published on the VSCode Marketplace, please download it from the [release](https://github.com/crisidev/bacon-ls/releases) 
-and install it manually.
+First, install [Bacon](https://dystroy.org/bacon/#installation).
+
+The VSCode extension is available on both VSCE and OVSX:
+* `VSCE` [https://marketplace.visualstudio.com/items?itemName=MatteoBigoi.bacon-ls-vscode](https://marketplace.visualstudio.com/items?itemName=MatteoBigoi.bacon-ls-vscode)
+* `OVSX` [https://open-vsx.org/extension/MatteoBigoi/bacon-ls-vscode](https://open-vsx.org/extension/MatteoBigoi/bacon-ls-vscode)
 
 ### Mason.nvim
 
@@ -126,9 +117,9 @@ is set to `true`.
 ```lua
 require("lspconfig").bacon_ls.setup({
     init_options = {
-        updateOnSave = true
+        updateOnSave = true 
         updateOnSaveWaitMillis = 1000
-        updateOnChange = true
+        updateOnChange = false
     }
 })
 ```
@@ -142,7 +133,25 @@ rust-analyzer.diagnostics.enable = false
 
 ### VSCode
 
-The extension can be configured using the VSCode interface.
+The extension can be configured using the VSCode settings interface.
+
+### Coc.nvim
+
+```vim
+call coc#config('languageserver', {
+      \ 'bacon-ls': {
+      \   'command': '~/.cargo/bin/bacon-ls',
+      \   'filetypes': ['rust'],
+      \   'rootPatterns': ['.git/', 'Cargo.lock', 'Cargo.toml'],
+      \   'initializationOptions': {
+      \     'updateOnSave': v:true, 
+      \     'updateOnSaveWaitMillis': 1000,
+      \     'updateOnChange': v:false
+      \   },
+      \   'settings': {}
+      \ }
+\ })
+```
 
 ## Troubleshooting
 
@@ -181,3 +190,18 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 ## Thanks
 
 `bacon-ls` 🐽 has been inspired by [typos-lsp](https://github.com/tekumara/typos-lsp).
+
+## Roadmap to 1.0 - ✅ done 🕖 in progress 🌍 future
+
+- ✅ Implement LSP server interface for `textDocument/diagnostic` and `workspace/diagnostic`
+- ✅ Manual Neovim configuration
+- ✅ Manual [LazyVim](https://www.lazyvim.org) configuration
+- 🕖 Automatic NeoVim configuration
+  - ✅ Add `bacon-ls` to [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/) - https://github.com/neovim/nvim-lspconfig/pull/3160
+  - ✅ Add `bacon` and `bacon-ls` to [mason.nvim](https://github.com/williamboman/mason.nvim) - https://github.com/mason-org/mason-registry/pull/5774
+  - ✅ Add `bacon-ls` to LazyVim [Rust extras](https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/plugins/extras/lang/rust.lua) - https://github.com/LazyVim/LazyVim/pull/3212
+- ✅ Add compiler hints to [Bacon](https://dystroy.org/bacon/) export locations - https://github.com/Canop/bacon/pull/187 https://github.com/Canop/bacon/pull/188
+- ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from Bacon 3.7
+- ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from 0.6.0
+- ✅ VSCode extension published available on Marketplace
+- 🌍 Emacs configuration
