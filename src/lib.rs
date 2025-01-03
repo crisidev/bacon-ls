@@ -1,4 +1,5 @@
 //! Bacon Language Server
+use std::borrow::Cow;
 use std::env;
 use std::path::Path;
 use std::time::Duration;
@@ -46,6 +47,11 @@ impl Default for State {
             update_on_change: true,
         }
     }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DiagnosticData<'c> {
+    corrections: Vec<Cow<'c, str>>,
 }
 
 #[derive(Debug, Default)]
@@ -119,16 +125,19 @@ impl BaconLs {
                             None
                         }) {
                             if let Some((path, diagnostic)) =
-                                Self::parse_bacon_diagnostic_line(&line, folder_path, uri)
+                                Self::parse_bacon_diagnostic_line(&line, folder_path)
                             {
-                                if !diagnostics.iter().any(
-                                    |(existing_path, existing_diagnostic)| {
-                                        existing_path.path() == path.path()
-                                            && diagnostic.range == existing_diagnostic.range
-                                            && diagnostic.severity == existing_diagnostic.severity
-                                            && diagnostic.message == existing_diagnostic.message
-                                    },
-                                ) {
+                                if Some(&path) == uri
+                                    && !diagnostics.iter().any(
+                                        |(existing_path, existing_diagnostic)| {
+                                            existing_path.path() == path.path()
+                                                && diagnostic.range == existing_diagnostic.range
+                                                && diagnostic.severity
+                                                    == existing_diagnostic.severity
+                                                && diagnostic.message == existing_diagnostic.message
+                                        },
+                                    )
+                                {
                                     diagnostics.push((path, diagnostic));
                                 }
                             }
@@ -176,27 +185,13 @@ impl BaconLs {
         Some((line_start, line_end, column_start, column_end))
     }
 
-    fn remove_none_suffix(s: &mut String) {
-        let suffix = " none";
-        if s.ends_with(suffix) {
-            // Calculate the position where the suffix starts
-            let new_len = s.len() - suffix.len();
-            // Truncate the string to this new length, effectively removing the suffix
-            s.truncate(new_len);
-        }
-    }
-
-    fn parse_bacon_diagnostic_line(
-        line: &str,
-        folder_path: &Path,
-        uri: Option<&Url>,
-    ) -> Option<(Url, Diagnostic)> {
+    fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
         // Split line into parts; expect exactly 7 parts in the format specified.
-        let line_split: Vec<_> = line.splitn(7, ':').collect();
+        let line_split: Vec<_> = line.splitn(8, ':').collect();
 
-        if line_split.len() != 7 {
+        if line_split.len() != 8 {
             tracing::error!(
-                "malformed line: expected 7 parts in the format of `severity:path:line_start:line_end:column_start:column_end:message` but found {}: {}",
+                "malformed line: expected 8 parts in the format of `severity:path:line_start:line_end:column_start:column_end:message:replacement` but found {}: {}",
                 line_split.len(),
                 line
             );
@@ -225,14 +220,18 @@ impl BaconLs {
             }
         };
 
-        // Check URI match
-        if uri.is_some() && Some(&path) != uri {
-            tracing::debug!("URI mismatch: expected {:?}, found {:?}", uri, path);
-            return None;
-        }
-
-        let mut message = line_split[6].replace("\\n", "\n");
-        Self::remove_none_suffix(&mut message);
+        let message = line_split[6].replace("\\n", "\n");
+        let replacement = line_split[7].replace("\\n", "\n");
+        let data = if replacement != "none" {
+            tracing::debug!(
+                "storing potential quick fix code action to replace word with {replacement}"
+            );
+            Some(serde_json::json!(DiagnosticData {
+                corrections: vec![replacement.into()]
+            }))
+        } else {
+            None
+        };
 
         tracing::debug!(
             "new diagnostic: severity: {severity:?}, path: {path:?}, line_start: {line_start}, line_end: {line_end}, column_start: {column_start}, column_end: {column_end}, message: {message}",
@@ -247,6 +246,7 @@ impl BaconLs {
             severity: Some(severity),
             source: Some(PKG_NAME.to_string()),
             message,
+            data,
             ..Diagnostic::default()
         };
 
@@ -267,11 +267,8 @@ mod tests {
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            None,
-        );
+        let result =
+            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -291,11 +288,8 @@ mod tests {
 For more information about this error, try `rustc --explain E0425`.
 error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         );
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("file:///app/github/bacon-ls/src/lib.rs").unwrap()),
-        );
+        let result =
+            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -304,36 +298,15 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ko() {
-        // Different path
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("file:///app/github/bacon-ls/src/main.rs").unwrap()),
-        );
-        assert_eq!(result, None);
-
-        // Non parsable path
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            ERROR_LINE,
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
-        );
-        assert_eq!(result, None);
-
         // Unparsable line
         let result = BaconLs::parse_bacon_diagnostic_line(
             "warning:/file:1:1",
             Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
         );
         assert_eq!(result, None);
 
         // Empty line
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            "",
-            Path::new("/app/github/bacon-ls"),
-            Some(&Url::from_str("fle://app/github/bacon-ls/src/main.rs").unwrap()),
-        );
+        let result = BaconLs::parse_bacon_diagnostic_line("", Path::new("/app/github/bacon-ls"));
         assert_eq!(result, None);
     }
 
