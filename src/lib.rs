@@ -14,10 +14,9 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PKG_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 const LOCATIONS_FILE: &str = ".bacon-locations";
 
-/// {PKG_NAME} v{PKG_VERSION} - {PKG_AUTHORS}
+/// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
 pub struct Args {
     /// display version information
