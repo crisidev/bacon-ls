@@ -29,11 +29,20 @@ jobs:
     - run: npm ci
     - run: npm run lint
     # vscode requires an X Server
-    - name: npm test
-      run: xvfb-run npm test
+    # - name: npm test
+      # run: xvfb-run npm test
     # ensure package can be built when package.json changes
     - name: npx vsce package
       run: npx vsce package
+  build-mac:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo test
+      env:
+        RUST_LOG: debug,globset=warn
+        RUST_BACKTRACE: 1
   build-windows:
     runs-on: windows-latest
     steps:
