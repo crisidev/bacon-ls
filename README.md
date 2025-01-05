@@ -4,10 +4,16 @@
 [![Release](https://img.shields.io/github/actions/workflow/status/crisidev/bacon-ls/release.yml?style=for-the-badge)](https://github.com/crisidev/bacon-ls/actions?query=workflow%3Arelease)
 [![Crates.io](https://img.shields.io/crates/v/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/crisidev/bacon-ls/blob/main/LICENSE)
+[![Codecov](https://img.shields.io/codecov/c/github/crisidev/bacon-ls?style=for-the-badge&token=42UR7SSSPB)](https://codecov.io/github/crisidev/bacon-ls)
 
 **Are you tired of [rust-analyzer](https://rust-analyzer.github.io/) diagnostics being slow?**
 
 LSP Server wrapper for the exceptional [Bacon](https://dystroy.org/bacon/) exposing [textDocument/diagnostic](https://microsoft.github.io/language-server-protocol/specification#textDocument_diagnostic) and [workspace/diagnostic](https://microsoft.github.io/language-server-protocol/specification#workspace_diagnostic) capabilities.
+
+`bacon-ls` 🐽 does not substitute `rust-analyzer`, it's a companion tool that can help with large 
+codebases where `rust-analyzer` can become slow dealing with diagnostics. 
+
+**`bacon-ls` 🐽 does not help with completion, analysis, refactor, etc... For these, `rust-analyzer` must be running.**
 
 ![Bacon screenshot](./img/screenshot.png)
 
