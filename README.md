@@ -3,6 +3,7 @@
 [![Ci](https://img.shields.io/github/actions/workflow/status/crisidev/bacon-ls/ci.yml?style=for-the-badge)](https://github.com/crisidev/bacon-ls/actions?query=workflow%3Aci)
 [![Release](https://img.shields.io/github/actions/workflow/status/crisidev/bacon-ls/release.yml?style=for-the-badge)](https://github.com/crisidev/bacon-ls/actions?query=workflow%3Arelease)
 [![Crates.io](https://img.shields.io/crates/v/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
+[![Crates.io](https://img.shields.io/crates/d/bacon-ls?style=for-the-badge)](https://crates.io/crates/bacon-ls)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/crisidev/bacon-ls/blob/main/LICENSE)
 [![Codecov](https://img.shields.io/codecov/c/github/crisidev/bacon-ls?style=for-the-badge&token=42UR7SSSPB)](https://codecov.io/github/crisidev/bacon-ls)
 
