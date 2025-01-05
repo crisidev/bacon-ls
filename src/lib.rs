@@ -183,7 +183,6 @@ impl BaconLs {
                 }
             }
         }
-
         diagnostics
     }
 
@@ -365,6 +364,74 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         // Empty line
         let result = BaconLs::parse_bacon_diagnostic_line("", Path::new("/app/github/bacon-ls"));
         assert_eq!(result, None);
+    }
+
+    // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
+    // because of how the Url is handled in Windows compared to *NIX, but until I don't have a
+    // proper test bed Windows support is probably broken.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_multiline_diagnostics_production() {
+        let tmp_dir = TempDir::new("bacon-ls").unwrap();
+        let file_path = tmp_dir.path().join(".bacon-locations");
+        let mut tmp_file = std::fs::File::create(file_path).unwrap();
+        let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
+        let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
+        writeln!(
+            tmp_file,
+            "warning:src/lib.rs:130:142:33:34:this if statement can be collapsed:none"
+        )
+        .unwrap();
+        writeln!(
+            tmp_file,
+            r#"help:{error_path}:130:142:33:34:collapse nested if block:if Some(&path) == uri && !diagnostics.iter().any(
+                                        |(existing_path, existing_diagnostic)| {{
+                                            existing_path.path() == path.path()
+                                                && diagnostic.range == existing_diagnostic.range
+                                                && diagnostic.severity
+                                                    == existing_diagnostic.severity
+                                                && diagnostic.message == existing_diagnostic.message
+                                        }},
+                                    ) {{
+                                    diagnostics.push((path, diagnostic));
+                                }}"#
+        ).unwrap();
+        writeln!(
+            tmp_file,
+            "warning:{error_path}:150:162:33:34:this if statement can be collapsed:none"
+        )
+        .unwrap();
+        writeln!(
+            tmp_file,
+            r#"help:{error_path}:150:162:33:34:collapse nested if block:if Some(&path) == uri && !diagnostics.iter().any(
+                                        |(existing_path, existing_diagnostic)| {{
+                                            existing_path.path() == path.path()
+                                                && diagnostic.range == existing_diagnostic.range
+                                                && diagnostic.severity
+                                                    == existing_diagnostic.severity
+                                                && diagnostic.message == existing_diagnostic.message
+                                        }},
+                                    ) {{
+                                    diagnostics.push((path, diagnostic));
+                                }}"#
+        ).unwrap();
+        let bacon_ls = BaconLs::default();
+        let mut state = bacon_ls.state.write().await;
+        state.workspace_folders = Some(vec![WorkspaceFolder {
+            name: tmp_dir.path().display().to_string(),
+            uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
+        }]);
+        drop(state);
+        let diagnostics = bacon_ls.diagnostics(Some(&error_path_url)).await;
+        assert_eq!(diagnostics.len(), 4);
+        assert!(diagnostics[0].1.data.is_none());
+        assert_eq!(diagnostics[0].1.message.len(), 34);
+        assert!(diagnostics[1].1.data.is_some());
+        assert_eq!(diagnostics[1].1.message.len(), 780);
+        assert!(diagnostics[2].1.data.is_none());
+        assert_eq!(diagnostics[2].1.message.len(), 34);
+        assert!(diagnostics[3].1.data.is_some());
+        assert_eq!(diagnostics[3].1.message.len(), 780);
     }
 
     // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
