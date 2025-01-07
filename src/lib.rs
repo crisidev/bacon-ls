@@ -320,7 +320,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempdir::TempDir;
 
-    const ERROR_LINE: &str = "error:/app/github/bacon-ls/src/lib.rs:352:352:9:20:cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error";
+    const ERROR_LINE: &str = "error|:|/app/github/bacon-ls/src/lib.rs|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error|:|none";
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
@@ -335,7 +335,7 @@ mod tests {
             r#"cannot find value `one` in this scope
     |
 352 |         one
-    |         ^^^ help:  a unit variant with a similar name exists: `None`
+    |         ^^^ help: a unit variant with a similar name exists: `None`
     |
    ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5
     |
@@ -380,12 +380,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "warning:src/lib.rs:130:142:33:34:this if statement can be collapsed:none"
+            "warning|:|src/lib.rs|:|130|:|142|:|33|:|34|:|this if statement can be collapsed|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help:{error_path}:130:142:33:34:collapse nested if block:if Some(&path) == uri && !diagnostics.iter().any(
+            r#"help|:|{error_path}|:|130|:|142|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
                                             existing_path.path() == path.path()
                                                 && diagnostic.range == existing_diagnostic.range
@@ -399,12 +399,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         ).unwrap();
         writeln!(
             tmp_file,
-            "warning:{error_path}:150:162:33:34:this if statement can be collapsed:none"
+            "warning|:|{error_path}|:|150|:|162|:|33|:|34|:|this if statement can be collapsed|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help:{error_path}:150:162:33:34:collapse nested if block:if Some(&path) == uri && !diagnostics.iter().any(
+            r#"help|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
                                             existing_path.path() == path.path()
                                                 && diagnostic.range == existing_diagnostic.range
@@ -448,23 +448,23 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
+            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none"
         )
         .unwrap();
         // duplicate the line
         writeln!(
             tmp_file,
-            "error:{error_path}:352:352:9:20:cannot find value `one` in this scope:none"
+            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "warning:{error_path}:354:354:9:20:cannot find value `two` in this scope:some"
+            "warning|:|{error_path}|:|354|:|354|:|9|:|20|:|cannot find value `two` in this scope|:|some"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "help:{error_path}:356:356:9:20:cannot find value `three` in this scope:some other"
+            "help|:|{error_path}|:|356|:|356|:|9|:|20|:|cannot find value `three` in this scope|:|some other"
         )
         .unwrap();
 
