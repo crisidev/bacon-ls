@@ -36,6 +36,7 @@ struct State {
     update_on_save: bool,
     update_on_save_wait_millis: Duration,
     update_on_change: bool,
+    validate_bacon_preferences: bool,
 }
 
 impl Default for State {
@@ -46,6 +47,7 @@ impl Default for State {
             update_on_save: true,
             update_on_save_wait_millis: Duration::from_millis(1000),
             update_on_change: true,
+            validate_bacon_preferences: true,
         }
     }
 }
