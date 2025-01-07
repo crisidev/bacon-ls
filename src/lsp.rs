@@ -14,7 +14,7 @@ use tower_lsp::{
     LanguageServer,
 };
 
-use crate::{BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{bacon::validate_bacon_preferences, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -46,25 +46,30 @@ impl LanguageServer for BaconLs {
                 if let Some(value) = values.get("locationsFile") {
                     state.locations_file = value
                         .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                         .to_string();
                 }
                 if let Some(value) = values.get("updateOnSave") {
                     state.update_on_save = value
                         .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?;
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
                 if let Some(value) = values.get("updateOnSaveWaitMillis") {
                     state.update_on_save_wait_millis = Duration::from_millis(
                         value
                             .as_u64()
-                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?,
+                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
                 if let Some(value) = values.get("updateOnChange") {
                     state.update_on_change = value
                         .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InternalError))?;
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                }
+                if let Some(value) = values.get("validateBaconPreferences") {
+                    state.validate_bacon_preferences = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
             }
         }
@@ -105,6 +110,19 @@ impl LanguageServer for BaconLs {
                     format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
                 )
                 .await;
+            let guard = self.state.read().await;
+            let validate = guard.validate_bacon_preferences;
+            drop(guard);
+            if validate {
+                if let Err(e) = validate_bacon_preferences().await {
+                    tracing::error!("{e}");
+                    client.show_message(MessageType::ERROR, e).await;
+                }
+            } else {
+                tracing::warn!(
+                    "skipping validation of bacon preferences, validateBaconPreferences is false"
+                );
+            }
         }
     }
 
@@ -123,7 +141,7 @@ impl LanguageServer for BaconLs {
         let update_on_save = guard.update_on_save;
         let update_on_save_wait_millis = guard.update_on_save_wait_millis;
         drop(guard);
-        tracing::debug!("client sent didSave request, update_on_save is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
+        tracing::debug!("client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
         if update_on_save {
             tokio::time::sleep(update_on_save_wait_millis).await;
             self.publish_diagnostics(&params.text_document.uri).await;
@@ -132,7 +150,7 @@ impl LanguageServer for BaconLs {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let update_on_change = self.state.read().await.update_on_change;
-        tracing::debug!("client sent didChange request, update_on_change is {update_on_change}");
+        tracing::debug!("client sent didChange request, updateOnChange is {update_on_change}");
         if update_on_change {
             self.publish_diagnostics(&params.text_document.uri).await;
         }

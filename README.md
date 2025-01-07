@@ -32,6 +32,7 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
     * [VSCode](#vscode)
     * [Coc.nvim](#coc.nvim)
 * [Troubleshooting](#troubleshooting)
+    * [Bacon preferences](#bacon-preferences)
     * [Vim - Neovim](#vim---neovim)
     * [VSCode](#vscode)
 * [How does it work?](#how-does-it-work?)
@@ -56,6 +57,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Precise diagnostics positions.
 * Ability to react to changes over document saves and changes that can be configured.
 * Replacement code actions as suggested by `clippy`.
+* Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
 
 ### Limitations
 
@@ -91,12 +93,13 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.7.0  # make sure you have at least 3.7.0
 ❯❯❯ bacon-ls --version
-0.8.0        # make sure you have at least 0.5.0
+0.9.0        # make sure you have at least 0.9.0
 ```
 
 ## Configuration
 
-Configure Bacon export settings with `bacon-ls` 🐽 export format and proper span support in `~/.config/bacon/prefs.toml`:
+Configure Bacon export settings with `bacon-ls` 🐽 export format and proper span support in the `bacon` preference file.
+To find where the file should be saved, you can use the command `bacon --prefs`:
 
 ```toml
 [jobs.bacon-ls]
@@ -107,7 +110,7 @@ need_stdout = true
 [exports.cargo-json-spans]
 auto = true
 exporter = "analyzer"
-line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{span.column_start}:{span.column_end}:{diagnostic.message}:{span.suggested_replacement}"
+line_format = "{diagnostic.level}|:|{span.file_name}|:|{span.line_start}|:|{span.line_end}|:|{span.column_start}|:|{span.column_end}|:|{diagnostic.message}|:|{span.suggested_replacement}"
 path = ".bacon-locations"
 ```
 
@@ -120,6 +123,7 @@ supports the following values:
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
 - `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
 - `updateOnChange` Try to update diagnostics every time the file changes (default: false).
+- `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 
 ### Neovim - LazyVim
 
@@ -145,6 +149,7 @@ require("lspconfig").bacon_ls.setup({
         updateOnSave = true 
         updateOnSaveWaitMillis = 1000
         updateOnChange = false
+        ...
     }
 })
 ```
@@ -186,6 +191,11 @@ call coc#config('languageserver', {
 ## Troubleshooting
 
 `bacon-ls` 🐽 can produce a log file in the folder where its running by exporting the `RUST_LOG` variable in the shell:
+
+### Bacon preferences
+
+If the `bacon` preference are not correct, an error message will be published to the LSP client, advising the user to
+check the README.
 
 ### Vim - Neovim
 
@@ -234,8 +244,9 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Support correct span in [Bacon](https://dystroy.org/bacon/) export locations - working from `bacon` 3.7 and `bacon-ls` 0.6.0
 - ✅ VSCode extension and configuration - available on the [release](https://github.com/crisidev/bacon-ls/releases) page from 0.6.0
 - ✅ VSCode extension published available on Marketplace
-- 🕖 Add `bacon-ls` to `bacon` website - https://github.com/Canop/bacon/pull/289
+- ✅ Add `bacon-ls` to `bacon` website - https://github.com/Canop/bacon/pull/289
 - ✅ Smarter handling of parsing the Bacon locations file
 - ✅ Faster response after a save event
 - ✅ Replacement code actions
+- ✅ Validate `bacon` preferences and return an error to the LSP client if they are not compatible with `bacon` - working from `bacon-ls` 0.9.0
 - 🌍 Emacs configuration
