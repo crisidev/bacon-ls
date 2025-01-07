@@ -14,6 +14,7 @@ use tower_lsp::{
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 
+mod bacon;
 mod lsp;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -241,11 +242,11 @@ impl BaconLs {
 
     fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
         // Split line into parts; expect exactly 7 parts in the format specified.
-        let line_split: Vec<_> = line.splitn(8, ':').collect();
+        let line_split: Vec<_> = line.splitn(8, "|:|").collect();
 
         if line_split.len() != 8 {
             tracing::error!(
-                "malformed line: expected 8 parts in the format of `severity:path:line_start:line_end:column_start:column_end:message:replacement` but found {}: {}",
+                "malformed line: expected 8 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|replacement` but found {}: {}",
                 line_split.len(),
                 line
             );
@@ -275,13 +276,13 @@ impl BaconLs {
         };
 
         let mut message = line_split[6].replace("\\n", "\n");
-        let replacement = line_split[7].replace("\\n", "\n");
+        let replacement = line_split[7];
         let data = if replacement != "none" {
             tracing::debug!(
                 "storing potential quick fix code action to replace word with {replacement}"
             );
             message.push_str(": ");
-            message.push_str(&replacement);
+            message.push_str(replacement);
             Some(serde_json::json!(DiagnosticData {
                 corrections: vec![replacement.into()]
             }))

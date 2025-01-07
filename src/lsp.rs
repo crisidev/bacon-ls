@@ -14,7 +14,7 @@ use tower_lsp::{
     LanguageServer,
 };
 
-use crate::{BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{bacon::validate_bacon_preferences, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -105,6 +105,10 @@ impl LanguageServer for BaconLs {
                     format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
                 )
                 .await;
+            if let Err(e) = validate_bacon_preferences().await {
+                tracing::error!("{e}");
+                client.show_message(MessageType::ERROR, e).await;
+            }
         }
     }
 
