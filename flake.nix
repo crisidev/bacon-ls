@@ -20,13 +20,13 @@
         };
 
         naersk' = pkgs.callPackage naersk { };
-
-      in
-      rec {
-        # For `nix build` & `nix run`:
-        defaultPackage = naersk'.buildPackage {
+        bacon-ls = naersk'.buildPackage {
           src = ./.;
         };
+      in
+      {
+        # For `nix build` & `nix run`:
+        defaultPackage = bacon-ls;
 
         # For `nix develop`:
         devShell = pkgs.mkShell {
@@ -34,6 +34,11 @@
             rustc
             cargo
           ];
+        };
+
+        # Overlay for package usage in other Nix configurations
+        overlay = final: prev: {
+          bacon-ls = bacon-ls;
         };
       }
     );
