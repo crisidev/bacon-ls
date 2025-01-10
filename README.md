@@ -249,4 +249,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Faster response after a save event
 - ✅ Replacement code actions
 - ✅ Validate `bacon` preferences and return an error to the LSP client if they are not compatible with `bacon` - working from `bacon-ls` 0.9.0
+- 🌍 Start `bacon` in background based on user preferences
 - 🌍 Emacs configuration
