@@ -71,10 +71,23 @@ impl LanguageServer for BaconLs {
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
+                if let Some(value) = values.get("runBaconInBackground") {
+                    state.run_bacon_in_background = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                }
+                if let Some(value) = values.get("runBaconInBackgroundCommandArguments") {
+                    state.run_bacon_in_background_command_args = value
+                        .as_str()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                        .to_string();
+                }
             }
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
         drop(state);
+
+        self.maybe_run_bacon_in_background().await;
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {

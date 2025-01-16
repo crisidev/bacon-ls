@@ -7,7 +7,9 @@ use std::time::Duration;
 use argh::FromArgs;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::RwLock;
+use tower_lsp::lsp_types::MessageType;
 use tower_lsp::{
     lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder},
     Client, LspService, Server,
@@ -20,6 +22,7 @@ mod lsp;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";
+const BACON_BACKGROUND_COMMAND_ARGS: &str = "--headless -j bacon-ls";
 
 /// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
@@ -37,6 +40,8 @@ struct State {
     update_on_save_wait_millis: Duration,
     update_on_change: bool,
     validate_bacon_preferences: bool,
+    run_bacon_in_background: bool,
+    run_bacon_in_background_command_args: String,
 }
 
 impl Default for State {
@@ -48,6 +53,8 @@ impl Default for State {
             update_on_save_wait_millis: Duration::from_millis(1000),
             update_on_change: true,
             validate_bacon_preferences: true,
+            run_bacon_in_background: false,
+            run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
         }
     }
 }
@@ -103,6 +110,43 @@ impl BaconLs {
         // Start the service.
         let (service, socket) = LspService::new(Self::new);
         Server::new(stdin, stdout, socket).serve(service).await;
+    }
+
+    async fn maybe_run_bacon_in_background(&self) {
+        let state = self.state.read().await;
+        let run_bacon_in_background = state.run_bacon_in_background;
+        let run_bacon_in_background_command_args =
+            state.run_bacon_in_background_command_args.clone();
+        drop(state);
+        if run_bacon_in_background {
+            let mut command = Command::new("bacon");
+            command.args(
+                run_bacon_in_background_command_args
+                    .split_whitespace()
+                    .collect::<Vec<&str>>(),
+            );
+            tracing::info!("starting bacon in background with arguments `{run_bacon_in_background_command_args}`");
+            match command.spawn() {
+                Ok(mut child) => {
+                    tokio::spawn(async move {
+                        tracing::debug!("waiting for bacon to terminate");
+                        let _ = child.wait().await;
+                    });
+
+                    tracing::info!(
+                        "bacon was started successfully and is running in the background"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("failed to start bacon: {e}");
+                    if let Some(client) = self.client.as_ref() {
+                        client
+                            .show_message(MessageType::ERROR, format!("failed to start bacon: {e}"))
+                            .await;
+                    }
+                }
+            }
+        }
     }
 
     async fn diagnostics(&self, uri: Option<&Url>) -> Vec<(Url, Diagnostic)> {
