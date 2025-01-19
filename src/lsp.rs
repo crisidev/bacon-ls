@@ -14,7 +14,10 @@ use tower_lsp::{
     LanguageServer,
 };
 
-use crate::{bacon::validate_bacon_preferences, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{
+    bacon::{run_bacon_in_background, validate_bacon_preferences},
+    BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION,
+};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -82,12 +85,15 @@ impl LanguageServer for BaconLs {
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                         .to_string();
                 }
+                if let Some(value) = values.get("createBaconPreferencesFile") {
+                    state.create_bacon_preferences_file = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                }
             }
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
         drop(state);
-
-        self.maybe_run_bacon_in_background().await;
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -115,6 +121,16 @@ impl LanguageServer for BaconLs {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        let state = self.state.read().await;
+        let run_bacon = state.run_bacon_in_background;
+        let bacon_command_args = state.run_bacon_in_background_command_args.clone();
+        let create_bacon_prefs = state.create_bacon_preferences_file;
+        drop(state);
+
+        if run_bacon {
+            run_bacon_in_background(&bacon_command_args, self.client.as_ref()).await;
+        }
+
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
             client
@@ -127,7 +143,7 @@ impl LanguageServer for BaconLs {
             let validate = guard.validate_bacon_preferences;
             drop(guard);
             if validate {
-                if let Err(e) = validate_bacon_preferences().await {
+                if let Err(e) = validate_bacon_preferences(create_bacon_prefs).await {
                     tracing::error!("{e}");
                     client.show_message(MessageType::ERROR, e).await;
                 }
