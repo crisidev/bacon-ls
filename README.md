@@ -59,11 +59,10 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Replacement code actions as suggested by `clippy`.
 * Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
 * Start `bacon` in background based on user preferences (requires `bacon` 3.8.0).
+* Synchronize diagnostics for all open files. 
 
 ### Limitations
 
-* Diagnostics are only synced to the currently open file - [#11](https://github.com/crisidev/bacon-ls/issues/11)
-    * To sync diagnostics to other files, the files must be open and saved or changed.
 * Windows support is not tested and probably broken - [#10](https://github.com/crisidev/bacon-ls/issues/10)
 
 ## Installation
@@ -129,6 +128,7 @@ supports the following values:
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
 - `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
 - `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
+- `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
 
 ### Neovim - LazyVim
 
@@ -256,4 +256,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Validate `bacon` preferences and return an error to the LSP client if they are not compatible with `bacon` - working from `bacon-ls` 0.9.0
 - ✅ Create `bacon` preferences file if not found on disk - working from `bacon-ls` 0.10.0
 - ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
+- ✅ Synchronize diagnostics for all open files - working from `bacon-ls` 0.10.0
 - 🌍 Emacs configuration

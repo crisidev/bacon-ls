@@ -90,6 +90,13 @@ impl LanguageServer for BaconLs {
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
+                if let Some(value) = values.get("synchronizeAllOpenFilesWaitMillis") {
+                    state.syncronize_all_open_files_wait_millis = Duration::from_millis(
+                        value
+                            .as_u64()
+                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
+                    );
+                }
             }
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
@@ -170,35 +177,85 @@ impl LanguageServer for BaconLs {
                 "client doesn't seem to be connected, the LSP server will not function properly"
             );
         }
+        let task_state = self.state.clone();
+        let task_client = self.client.clone();
+        tokio::task::spawn(Self::syncronize_diagnostics_for_all_open_files(
+            task_state,
+            task_client,
+        ));
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         tracing::debug!("client sent didOpen request");
-        self.publish_diagnostics(&params.text_document.uri).await;
+        let mut state = self.state.write().await;
+        state.open_files.insert(params.text_document.uri.clone());
+        let locations_file = state.locations_file.clone();
+        let workspace_folders = state.workspace_folders.clone();
+        drop(state);
+        let client = self.client.clone();
+        Self::publish_diagnostics(
+            client.as_ref(),
+            &params.text_document.uri,
+            &locations_file,
+            workspace_folders.as_deref(),
+        )
+        .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         tracing::debug!("client sent didClose request");
-        self.publish_diagnostics(&params.text_document.uri).await;
+        let mut state = self.state.write().await;
+        state.open_files.remove(&params.text_document.uri);
+        let locations_file = state.locations_file.clone();
+        let workspace_folders = state.workspace_folders.clone();
+        drop(state);
+        let client = self.client.clone();
+        Self::publish_diagnostics(
+            client.as_ref(),
+            &params.text_document.uri,
+            &locations_file,
+            workspace_folders.as_deref(),
+        )
+        .await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        let guard = self.state.read().await;
-        let update_on_save = guard.update_on_save;
-        let update_on_save_wait_millis = guard.update_on_save_wait_millis;
-        drop(guard);
+        let state = self.state.read().await;
+        let update_on_save = state.update_on_save;
+        let update_on_save_wait_millis = state.update_on_save_wait_millis;
+        let locations_file = state.locations_file.clone();
+        let workspace_folders = state.workspace_folders.clone();
+        drop(state);
         tracing::debug!("client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
         if update_on_save {
+            let client = self.client.clone();
             tokio::time::sleep(update_on_save_wait_millis).await;
-            self.publish_diagnostics(&params.text_document.uri).await;
+            Self::publish_diagnostics(
+                client.as_ref(),
+                &params.text_document.uri,
+                &locations_file,
+                workspace_folders.as_deref(),
+            )
+            .await;
         }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let state = self.state.read().await;
         let update_on_change = self.state.read().await.update_on_change;
+        let locations_file = state.locations_file.clone();
+        let workspace_folders = state.workspace_folders.clone();
+        drop(state);
         tracing::debug!("client sent didChange request, updateOnChange is {update_on_change}");
         if update_on_change {
-            self.publish_diagnostics(&params.text_document.uri).await;
+            let client = self.client.clone();
+            Self::publish_diagnostics(
+                client.as_ref(),
+                &params.text_document.uri,
+                &locations_file,
+                workspace_folders.as_deref(),
+            )
+            .await;
         }
     }
 
