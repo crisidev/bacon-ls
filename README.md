@@ -276,4 +276,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Create `bacon` preferences file if not found on disk - working from `bacon-ls` 0.10.0
 - ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
 - ✅ Synchronize diagnostics for all open files - working from `bacon-ls` 0.10.0
+- ✅ Support Helix editor - working from bacon-ls 0.12.0
 - 🌍 Emacs configuration
