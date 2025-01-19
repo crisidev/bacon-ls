@@ -31,6 +31,7 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
     * [Neovim - Manual](#neovim---manual)
     * [VSCode](#vscode)
     * [Coc.nvim](#coc.nvim)
+    * [Helix](#helix)
 * [Troubleshooting](#troubleshooting)
     * [Bacon preferences](#bacon-preferences)
     * [Vim - Neovim](#vim---neovim)
@@ -192,6 +193,24 @@ call coc#config('languageserver', {
       \ }
 \ })
 ```
+
+### Helix
+
+Extend your `languages.toml` with the following:
+
+```toml
+[[language]]
+name = "rust"
+language-servers = ["rust-analyzer", "bacon-ls"]
+
+[language-server.rust-analyzer.config]
+checkOnSave = { enable = false }
+diagnostics = { enable = false }
+
+[language-server.bacon-ls]
+command = "bacon-ls"
+```
+
 
 ## Troubleshooting
 
