@@ -46,6 +46,7 @@ struct State {
     create_bacon_preferences_file: bool,
     bacon_command_handle: Option<JoinHandle<()>>,
     open_files: HashSet<Url>,
+    syncronize_files_wait_millis: Duration,
 }
 
 impl Default for State {
@@ -62,6 +63,7 @@ impl Default for State {
             create_bacon_preferences_file: true,
             bacon_command_handle: None,
             open_files: HashSet::new(),
+            syncronize_files_wait_millis: Duration::from_millis(2000),
         }
     }
 }
@@ -124,11 +126,6 @@ impl BaconLs {
         locations_file: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) -> Vec<(Url, Diagnostic)> {
-        // let state = self.state.read().await;
-        // let locations_file = state.locations_file.clone();
-        // let workspace_folders = state.workspace_folders.clone();
-        // drop(state);
-
         let mut diagnostics: Vec<(Url, Diagnostic)> = vec![];
 
         if let Some(workspace_folders) = workspace_folders {
@@ -253,6 +250,34 @@ impl BaconLs {
                     None,
                 )
                 .await;
+        }
+    }
+
+    async fn syncronize_diagnostics_for_all_open_files(
+        state: Arc<RwLock<State>>,
+        client: Option<Arc<Client>>,
+    ) {
+        tracing::info!(
+            "starting background task in charge of syncronizing diagnostics for all open files"
+        );
+        loop {
+            let loop_state = state.read().await;
+            let open_files = loop_state.open_files.clone();
+            let locations_file = loop_state.locations_file.clone();
+            let workspace_folders = loop_state.workspace_folders.clone();
+            let wait_time = loop_state.syncronize_files_wait_millis;
+            drop(loop_state);
+            tracing::info!("running period diagnostic publish for open files `{open_files:?}`");
+            for uri in open_files.iter() {
+                Self::publish_diagnostics(
+                    client.as_ref(),
+                    uri,
+                    &locations_file,
+                    workspace_folders.as_deref(),
+                )
+                .await;
+            }
+            tokio::time::sleep(wait_time).await;
         }
     }
 
@@ -455,8 +480,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        let diagnostics =
-            BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
+        let diagnostics = BaconLs::diagnostics(
+            Some(&error_path_url),
+            LOCATIONS_FILE,
+            workspace_folders.as_deref(),
+        )
+        .await;
         assert_eq!(diagnostics.len(), 4);
         assert!(diagnostics[0].1.data.is_none());
         assert_eq!(diagnostics[0].1.message.len(), 34);
@@ -505,7 +534,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        let diagnostics = BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
+        let diagnostics = BaconLs::diagnostics(
+            Some(&error_path_url),
+            LOCATIONS_FILE,
+            workspace_folders.as_deref(),
+        )
+        .await;
         assert_eq!(diagnostics.len(), 3);
     }
 }

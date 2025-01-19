@@ -172,26 +172,10 @@ impl LanguageServer for BaconLs {
         }
         let task_state = self.state.clone();
         let task_client = self.client.clone();
-        tokio::task::spawn(async move {
-            loop {
-                let state = task_state.read().await;
-                let open_files = state.open_files.clone();
-                let locations_file = state.locations_file.clone();
-                let workspace_folders = state.workspace_folders.clone();
-                drop(state);
-                tracing::info!("running period diagnostic publish for open files `{open_files:?}`");
-                for uri in open_files.iter() {
-                    Self::publish_diagnostics(
-                        task_client.as_ref(),
-                        uri,
-                        &locations_file,
-                        workspace_folders.as_deref(),
-                    )
-                    .await;
-                }
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-        });
+        tokio::task::spawn(Self::syncronize_diagnostics_for_all_open_files(
+            task_state,
+            task_client,
+        ));
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
