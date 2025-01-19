@@ -52,9 +52,9 @@ impl Default for State {
             update_on_save_wait_millis: Duration::from_millis(1000),
             update_on_change: true,
             validate_bacon_preferences: true,
-            run_bacon_in_background: false,
+            run_bacon_in_background: true,
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
-            create_bacon_preferences_file: false,
+            create_bacon_preferences_file: true,
         }
     }
 }
