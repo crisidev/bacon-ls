@@ -148,14 +148,22 @@ impl LanguageServer for BaconLs {
             }
 
             if run_bacon {
-                if let Err(e) = run_bacon_in_background(&bacon_command_args).await {
-                    tracing::error!("{e}");
-                    client.show_message(MessageType::ERROR, e).await;
-                } else {
-                    let message = "bacon was started successfully and is running in the background";
-                    tracing::info!(message);
-                    client.show_message(MessageType::INFO, message).await;
+                match run_bacon_in_background(&bacon_command_args).await {
+                    Ok(command) => {
+                        tracing::info!(
+                            "bacon was started successfully and is running in the background"
+                        );
+                        let mut state = self.state.write().await;
+                        state.bacon_command_handle = Some(command);
+                        drop(state);
+                    }
+                    Err(e) => {
+                        tracing::error!("{e}");
+                        client.show_message(MessageType::ERROR, e).await;
+                    }
                 }
+            } else {
+                tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
             }
         } else {
             tracing::error!(
@@ -254,6 +262,12 @@ impl LanguageServer for BaconLs {
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
+        let state = self.state.read().await;
+        if let Some(handle) = state.bacon_command_handle.as_ref() {
+            tracing::info!("terminating bacon from running in background");
+            handle.abort();
+        }
+        drop(state);
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
             client
