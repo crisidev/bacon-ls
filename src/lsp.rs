@@ -257,6 +257,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
+        tracing::debug!("client sent didDeleteFiles request");
         for file in params.files {
             if let Ok(uri) = Url::parse(&file.uri) {
                 let mut state = self.state.write().await;
@@ -267,6 +268,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
+        tracing::debug!("client sent didRenameFiles request");
         for file in params.files {
             if let (Ok(old_uri), Ok(new_uri)) =
                 (Url::parse(&file.old_uri), Url::parse(&file.new_uri))
