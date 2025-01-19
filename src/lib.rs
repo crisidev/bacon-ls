@@ -541,5 +541,17 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         )
         .await;
         assert_eq!(diagnostics.len(), 3);
+        let diagnostics_vec = BaconLs::diagnostics_vec(
+            Some(&error_path_url),
+            LOCATIONS_FILE,
+            workspace_folders.as_deref(),
+        )
+        .await;
+        assert_eq!(diagnostics_vec.len(), 3);
+    }
+
+    #[test]
+    fn test_can_configure_tracing() {
+        BaconLs::configure_tracing(Some("info".to_string()));
     }
 }
