@@ -58,7 +58,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Ability to react to changes over document saves and changes that can be configured.
 * Replacement code actions as suggested by `clippy`.
 * Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
-* Start `bacon` in background
+* Start `bacon` in background based on user preferences (requires `bacon` 3.8.0).
 
 ### Limitations
 
@@ -92,7 +92,7 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ```bash
 ❯❯❯ cargo install --locked bacon bacon-ls
 ❯❯❯ bacon --version
-bacon 3.7.0  # make sure you have at least 3.7.0
+bacon 3.8.0  # make sure you have at least 3.8.0
 ❯❯❯ bacon-ls --version
 0.10.0        # make sure you have at least 0.10.0
 ```
