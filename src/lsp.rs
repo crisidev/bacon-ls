@@ -4,20 +4,17 @@ use tower_lsp::{
     jsonrpc,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, DidChangeTextDocumentParams,
-        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-        InitializeParams, InitializeResult, InitializedParams, MessageType, PositionEncodingKind,
-        PublishDiagnosticsClientCapabilities, ServerCapabilities, ServerInfo,
-        TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-        WorkDoneProgressOptions, WorkspaceEdit,
+        CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams,
+        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+        DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
+        MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams,
+        ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
     },
     LanguageServer,
 };
 
-use crate::{
-    bacon::{run_bacon_in_background, validate_bacon_preferences},
-    BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION,
-};
+use crate::{bacon::Bacon, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -144,7 +141,7 @@ impl LanguageServer for BaconLs {
                 )
                 .await;
             if validate_prefs {
-                if let Err(e) = validate_bacon_preferences(create_bacon_prefs).await {
+                if let Err(e) = Bacon::validate_preferences(create_bacon_prefs).await {
                     tracing::error!("{e}");
                     client.show_message(MessageType::ERROR, e).await;
                 }
@@ -155,7 +152,7 @@ impl LanguageServer for BaconLs {
             }
 
             if run_bacon {
-                match run_bacon_in_background(&bacon_command_args).await {
+                match Bacon::run_in_background("bacon", &bacon_command_args).await {
                     Ok(command) => {
                         tracing::info!(
                             "bacon was started successfully and is running in the background"
@@ -256,6 +253,40 @@ impl LanguageServer for BaconLs {
                 workspace_folders.as_deref(),
             )
             .await;
+        }
+    }
+
+    async fn did_delete_files(&self, params: DeleteFilesParams) {
+        tracing::debug!("client sent didDeleteFiles request");
+        for file in params.files {
+            if let Ok(uri) = Url::parse(&file.uri) {
+                let mut state = self.state.write().await;
+                state.open_files.remove(&uri);
+                drop(state);
+            }
+        }
+    }
+
+    async fn did_rename_files(&self, params: RenameFilesParams) {
+        tracing::debug!("client sent didRenameFiles request");
+        for file in params.files {
+            if let (Ok(old_uri), Ok(new_uri)) =
+                (Url::parse(&file.old_uri), Url::parse(&file.new_uri))
+            {
+                let mut state = self.state.write().await;
+                let locations_file = state.locations_file.clone();
+                let workspace_folders = state.workspace_folders.clone();
+                state.open_files.remove(&old_uri);
+                state.open_files.insert(new_uri.clone());
+                drop(state);
+                Self::publish_diagnostics(
+                    self.client.as_ref(),
+                    &new_uri,
+                    &locations_file,
+                    workspace_folders.as_deref(),
+                )
+                .await;
+            }
         }
     }
 
