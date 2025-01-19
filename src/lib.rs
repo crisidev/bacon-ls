@@ -8,6 +8,7 @@ use argh::FromArgs;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tower_lsp::{
     lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder},
     Client, LspService, Server,
@@ -41,6 +42,7 @@ struct State {
     run_bacon_in_background: bool,
     run_bacon_in_background_command_args: String,
     create_bacon_preferences_file: bool,
+    bacon_command_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for State {
@@ -49,12 +51,13 @@ impl Default for State {
             workspace_folders: None,
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,
-            update_on_save_wait_millis: Duration::from_millis(1000),
+            update_on_save_wait_millis: Duration::from_millis(2000),
             update_on_change: true,
             validate_bacon_preferences: true,
             run_bacon_in_background: true,
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
             create_bacon_preferences_file: true,
+            bacon_command_handle: None,
         }
     }
 }

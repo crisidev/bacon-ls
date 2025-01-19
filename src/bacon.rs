@@ -1,9 +1,11 @@
 use std::path::Path;
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 
 use crate::LOCATIONS_FILE;
 
@@ -132,12 +134,18 @@ pub(crate) async fn validate_bacon_preferences(create_prefs_file: bool) -> Resul
     Ok(())
 }
 
-pub(crate) async fn run_bacon_in_background(bacon_command_args: &str) -> Result<(), String> {
-    let mut command = Command::new("bacon");
-    command.args(bacon_command_args.split_whitespace().collect::<Vec<&str>>());
+pub(crate) async fn run_bacon_in_background(
+    bacon_command_args: &str,
+) -> Result<JoinHandle<()>, String> {
     tracing::info!("starting bacon in background with arguments `{bacon_command_args}`");
-
-    match command.spawn() {
+    match Command::new("bacon")
+        .args(bacon_command_args.split_whitespace().collect::<Vec<&str>>())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
         Ok(mut child) => {
             // Handle stdout
             if let Some(stdout) = child.stdout.take() {
@@ -162,17 +170,13 @@ pub(crate) async fn run_bacon_in_background(bacon_command_args: &str) -> Result<
             }
 
             // Wait for the child process to finish
-            tokio::spawn(async move {
+            Ok(tokio::spawn(async move {
                 tracing::debug!("waiting for bacon to terminate");
                 let _ = child.wait().await;
-            });
+            }))
         }
-        Err(e) => {
-            return Err(format!("failed to start bacon: {e}"));
-        }
+        Err(e) => Err(format!("failed to start bacon: {e}")),
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
