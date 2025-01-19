@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tower_lsp::{lsp_types::MessageType, Client};
 
 use crate::LOCATIONS_FILE;
 
@@ -133,7 +132,7 @@ pub(crate) async fn validate_bacon_preferences(create_prefs_file: bool) -> Resul
     Ok(())
 }
 
-pub(crate) async fn run_bacon_in_background(bacon_command_args: &str, client: Option<&Client>) {
+pub(crate) async fn run_bacon_in_background(bacon_command_args: &str) -> Result<(), String> {
     let mut command = Command::new("bacon");
     command.args(bacon_command_args.split_whitespace().collect::<Vec<&str>>());
     tracing::info!("starting bacon in background with arguments `{bacon_command_args}`");
@@ -167,22 +166,13 @@ pub(crate) async fn run_bacon_in_background(bacon_command_args: &str, client: Op
                 tracing::debug!("waiting for bacon to terminate");
                 let _ = child.wait().await;
             });
-
-            let message = "bacon was started successfully and is running in the background";
-            tracing::info!(message);
-            if let Some(client) = client {
-                client.show_message(MessageType::INFO, message).await;
-            }
         }
         Err(e) => {
-            tracing::error!("failed to start bacon: {e}");
-            if let Some(client) = client {
-                client
-                    .show_message(MessageType::ERROR, format!("failed to start bacon: {e}"))
-                    .await;
-            }
+            return Err(format!("failed to start bacon: {e}"));
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

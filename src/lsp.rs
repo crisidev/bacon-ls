@@ -125,11 +125,8 @@ impl LanguageServer for BaconLs {
         let run_bacon = state.run_bacon_in_background;
         let bacon_command_args = state.run_bacon_in_background_command_args.clone();
         let create_bacon_prefs = state.create_bacon_preferences_file;
+        let validate_prefs = state.validate_bacon_preferences;
         drop(state);
-
-        if run_bacon {
-            run_bacon_in_background(&bacon_command_args, self.client.as_ref()).await;
-        }
 
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
@@ -139,10 +136,7 @@ impl LanguageServer for BaconLs {
                     format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
                 )
                 .await;
-            let guard = self.state.read().await;
-            let validate = guard.validate_bacon_preferences;
-            drop(guard);
-            if validate {
+            if validate_prefs {
                 if let Err(e) = validate_bacon_preferences(create_bacon_prefs).await {
                     tracing::error!("{e}");
                     client.show_message(MessageType::ERROR, e).await;
@@ -152,6 +146,21 @@ impl LanguageServer for BaconLs {
                     "skipping validation of bacon preferences, validateBaconPreferences is false"
                 );
             }
+
+            if run_bacon {
+                if let Err(e) = run_bacon_in_background(&bacon_command_args).await {
+                    tracing::error!("{e}");
+                    client.show_message(MessageType::ERROR, e).await;
+                } else {
+                    let message = "bacon was started successfully and is running in the background";
+                    tracing::info!(message);
+                    client.show_message(MessageType::INFO, message).await;
+                }
+            }
+        } else {
+            tracing::error!(
+                "client doesn't seem to be connected, the LSP server will not function properly"
+            );
         }
     }
 
