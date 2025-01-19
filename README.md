@@ -58,6 +58,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Ability to react to changes over document saves and changes that can be configured.
 * Replacement code actions as suggested by `clippy`.
 * Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
+* Start `bacon` in background
 
 ### Limitations
 
@@ -93,7 +94,7 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.7.0  # make sure you have at least 3.7.0
 ❯❯❯ bacon-ls --version
-0.9.0        # make sure you have at least 0.9.0
+0.10.0        # make sure you have at least 0.10.0
 ```
 
 ## Configuration
@@ -114,7 +115,8 @@ line_format = "{diagnostic.level}|:|{span.file_name}|:|{span.line_start}|:|{span
 path = ".bacon-locations"
 ```
 
-**NOTE: `bacon` MUST be running to generate the export locations with the `bacon-ls` job: `bacon -j bacon-ls`.**
+**NOTE: `bacon` MUST be running to generate the export locations with the `bacon-ls` job: `bacon -j bacon-ls`.
+From `bacon-ls` 0.10.0, this is done automatically if the option `runBaconInBackground` is set to true.**
 
 The language server can be configured using the appropriate LSP protocol and
 supports the following values:
@@ -122,8 +124,11 @@ supports the following values:
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
 - `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
-- `updateOnChange` Try to update diagnostics every time the file changes (default: false).
+- `updateOnChange` Try to update diagnostics every time the file changes (default: true).
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
+- `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
+- `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
+- `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
 
 ### Neovim - LazyVim
 
@@ -165,7 +170,7 @@ rust-analyzer.diagnostics.enable = false
 
 The extension can be configured using the VSCode settings interface.
 
-**It is very important that rust-analyzer `Check On Save` and `Diagnostics` are disabled for `bacon-ls` to work properly:**
+**It is very important that rust-analyzer `Check On Save` and `Diagnostics` are turned off for `bacon-ls` to work properly:**
 
 * Untick `Rust-analyzer -> general -> Check On Save`
 * Untick `Rust-analyzer -> diagnostics -> Enable`
@@ -249,5 +254,6 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Faster response after a save event
 - ✅ Replacement code actions
 - ✅ Validate `bacon` preferences and return an error to the LSP client if they are not compatible with `bacon` - working from `bacon-ls` 0.9.0
-- 🌍 Start `bacon` in background based on user preferences
+- ✅ Create `bacon` preferences file if not found on disk - working from `bacon-ls` 0.10.0
+- ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
 - 🌍 Emacs configuration
