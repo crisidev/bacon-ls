@@ -46,6 +46,7 @@ struct State {
     create_bacon_preferences_file: bool,
     bacon_command_handle: Option<JoinHandle<()>>,
     syncronize_all_open_files_wait_millis: Duration,
+    diagnostics_data_supported: bool,
     open_files: HashSet<Url>,
 }
 
@@ -63,6 +64,7 @@ impl Default for State {
             create_bacon_preferences_file: true,
             bacon_command_handle: None,
             syncronize_all_open_files_wait_millis: Duration::from_millis(2000),
+            diagnostics_data_supported: false,
             open_files: HashSet::new(),
         }
     }

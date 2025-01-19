@@ -23,6 +23,18 @@ impl LanguageServer for BaconLs {
         tracing::debug!("initializing with input parameters: {params:#?}");
 
         if let Some(TextDocumentClientCapabilities {
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities { .. }),
+            ..
+        }) = params.capabilities.text_document
+        {
+            tracing::info!("client supports diagnostics");
+        } else {
+            tracing::warn!("client does not support diagnostics");
+            return Err(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidRequest));
+        }
+
+        let mut diagnostics_data_supported = false;
+        if let Some(TextDocumentClientCapabilities {
             publish_diagnostics:
                 Some(PublishDiagnosticsClientCapabilities {
                     data_support: Some(true),
@@ -31,14 +43,15 @@ impl LanguageServer for BaconLs {
             ..
         }) = params.capabilities.text_document
         {
-            tracing::info!("client supports diagnostics data and diagnostics")
+            tracing::info!("client supports diagnostics data");
+            diagnostics_data_supported = true;
         } else {
-            tracing::error!("client does not support diagnostics data");
-            return Err(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidRequest));
+            tracing::warn!("client does not support diagnostics data");
         }
 
         let mut state = self.state.write().await;
         state.workspace_folders = params.workspace_folders;
+        state.diagnostics_data_supported = diagnostics_data_supported;
 
         if let Some(ops) = params.initialization_options {
             if let Some(values) = ops.as_object() {
@@ -295,58 +308,65 @@ impl LanguageServer for BaconLs {
         params: CodeActionParams,
     ) -> jsonrpc::Result<Option<CodeActionResponse>> {
         tracing::debug!("code_action: {params:?}");
+        let state = self.state.read().await;
+        let diagnostics_data_supported = state.diagnostics_data_supported;
+        drop(state);
 
-        let actions = params
-            .context
-            .diagnostics
-            .iter()
-            .filter(|diag| diag.source == Some("bacon-ls".to_string()))
-            .flat_map(|diag| match &diag.data {
-                Some(data) => {
-                    if let Ok(DiagnosticData { corrections }) =
-                        serde_json::from_value::<DiagnosticData>(data.clone())
-                    {
-                        corrections
-                            .iter()
-                            .map(|c| {
-                                CodeActionOrCommand::CodeAction(CodeAction {
-                                    title: "Replace with clippy suggestion".to_string(),
-                                    kind: Some(CodeActionKind::QUICKFIX),
-                                    diagnostics: Some(vec![diag.clone()]),
-                                    edit: Some(WorkspaceEdit {
-                                        changes: Some(HashMap::from([(
-                                            params.text_document.uri.clone(),
-                                            vec![TextEdit {
-                                                range: diag.range,
-                                                new_text: c.to_string(),
-                                            }],
-                                        )])),
-                                        ..WorkspaceEdit::default()
-                                    }),
-                                    is_preferred: if corrections.len() == 1 {
-                                        Some(true)
-                                    } else {
-                                        None
-                                    },
-                                    ..CodeAction::default()
+        if diagnostics_data_supported {
+            let actions = params
+                .context
+                .diagnostics
+                .iter()
+                .filter(|diag| diag.source == Some("bacon-ls".to_string()))
+                .flat_map(|diag| match &diag.data {
+                    Some(data) => {
+                        if let Ok(DiagnosticData { corrections }) =
+                            serde_json::from_value::<DiagnosticData>(data.clone())
+                        {
+                            corrections
+                                .iter()
+                                .map(|c| {
+                                    CodeActionOrCommand::CodeAction(CodeAction {
+                                        title: "Replace with clippy suggestion".to_string(),
+                                        kind: Some(CodeActionKind::QUICKFIX),
+                                        diagnostics: Some(vec![diag.clone()]),
+                                        edit: Some(WorkspaceEdit {
+                                            changes: Some(HashMap::from([(
+                                                params.text_document.uri.clone(),
+                                                vec![TextEdit {
+                                                    range: diag.range,
+                                                    new_text: c.to_string(),
+                                                }],
+                                            )])),
+                                            ..WorkspaceEdit::default()
+                                        }),
+                                        is_preferred: if corrections.len() == 1 {
+                                            Some(true)
+                                        } else {
+                                            None
+                                        },
+                                        ..CodeAction::default()
+                                    })
                                 })
-                            })
-                            .collect()
-                    } else {
-                        tracing::error!(
-                            "deserialization failed: received {data:?} as diagnostic data",
-                        );
+                                .collect()
+                        } else {
+                            tracing::error!(
+                                "deserialization failed: received {data:?} as diagnostic data",
+                            );
+                            vec![]
+                        }
+                    }
+                    None => {
+                        tracing::warn!("client doesn't support diagnostic data");
                         vec![]
                     }
-                }
-                None => {
-                    tracing::warn!("client doesn't support diagnostic data");
-                    vec![]
-                }
-            })
-            .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
 
-        Ok(Some(actions))
+            Ok(Some(actions))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
