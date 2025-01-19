@@ -90,6 +90,13 @@ impl LanguageServer for BaconLs {
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
+                if let Some(value) = values.get("synchronizeAllOpenFilesWaitMillis") {
+                    state.syncronize_all_open_files_wait_millis = Duration::from_millis(
+                        value
+                            .as_u64()
+                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
+                    );
+                }
             }
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");

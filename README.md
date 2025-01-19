@@ -122,12 +122,13 @@ supports the following values:
 
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
-- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 2000).
+- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
 - `updateOnChange` Try to update diagnostics every time the file changes (default: true).
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
 - `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
 - `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
+- `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
 
 ### Neovim - LazyVim
 

@@ -45,8 +45,8 @@ struct State {
     run_bacon_in_background_command_args: String,
     create_bacon_preferences_file: bool,
     bacon_command_handle: Option<JoinHandle<()>>,
+    syncronize_all_open_files_wait_millis: Duration,
     open_files: HashSet<Url>,
-    syncronize_files_wait_millis: Duration,
 }
 
 impl Default for State {
@@ -62,8 +62,8 @@ impl Default for State {
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
             create_bacon_preferences_file: true,
             bacon_command_handle: None,
+            syncronize_all_open_files_wait_millis: Duration::from_millis(2000),
             open_files: HashSet::new(),
-            syncronize_files_wait_millis: Duration::from_millis(2000),
         }
     }
 }
@@ -265,7 +265,7 @@ impl BaconLs {
             let open_files = loop_state.open_files.clone();
             let locations_file = loop_state.locations_file.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
-            let wait_time = loop_state.syncronize_files_wait_millis;
+            let wait_time = loop_state.syncronize_all_open_files_wait_millis;
             drop(loop_state);
             tracing::info!("running period diagnostic publish for open files `{open_files:?}`");
             for uri in open_files.iter() {
