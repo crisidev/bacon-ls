@@ -63,8 +63,6 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ### Limitations
 
-* Diagnostics are only synced to the currently open file - [#11](https://github.com/crisidev/bacon-ls/issues/11)
-    * To sync diagnostics to other files, the files must be open and saved or changed.
 * Windows support is not tested and probably broken - [#10](https://github.com/crisidev/bacon-ls/issues/10)
 
 ## Installation
