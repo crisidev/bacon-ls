@@ -1,7 +1,9 @@
 //! Bacon Language Server
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::env;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use argh::FromArgs;
@@ -43,6 +45,7 @@ struct State {
     run_bacon_in_background_command_args: String,
     create_bacon_preferences_file: bool,
     bacon_command_handle: Option<JoinHandle<()>>,
+    open_files: HashSet<Url>,
 }
 
 impl Default for State {
@@ -51,13 +54,14 @@ impl Default for State {
             workspace_folders: None,
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,
-            update_on_save_wait_millis: Duration::from_millis(2000),
+            update_on_save_wait_millis: Duration::from_millis(1000),
             update_on_change: true,
             validate_bacon_preferences: true,
             run_bacon_in_background: true,
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
             create_bacon_preferences_file: true,
             bacon_command_handle: None,
+            open_files: HashSet::new(),
         }
     }
 }
@@ -69,15 +73,15 @@ struct DiagnosticData<'c> {
 
 #[derive(Debug, Default)]
 pub struct BaconLs {
-    client: Option<Client>,
-    state: RwLock<State>,
+    client: Option<Arc<Client>>,
+    state: Arc<RwLock<State>>,
 }
 
 impl BaconLs {
     fn new(client: Client) -> Self {
         Self {
-            client: Some(client),
-            state: RwLock::new(State::default()),
+            client: Some(Arc::new(client)),
+            state: Arc::new(RwLock::new(State::default())),
         }
     }
 
@@ -115,18 +119,22 @@ impl BaconLs {
         Server::new(stdin, stdout, socket).serve(service).await;
     }
 
-    async fn diagnostics(&self, uri: Option<&Url>) -> Vec<(Url, Diagnostic)> {
-        let state = self.state.read().await;
-        let locations_file = state.locations_file.clone();
-        let workspace_folders = state.workspace_folders.clone();
-        drop(state);
+    async fn diagnostics(
+        uri: Option<&Url>,
+        locations_file: &str,
+        workspace_folders: Option<&[WorkspaceFolder]>,
+    ) -> Vec<(Url, Diagnostic)> {
+        // let state = self.state.read().await;
+        // let locations_file = state.locations_file.clone();
+        // let workspace_folders = state.workspace_folders.clone();
+        // drop(state);
 
         let mut diagnostics: Vec<(Url, Diagnostic)> = vec![];
 
-        if let Some(workspace_folders) = workspace_folders.as_ref() {
+        if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
                 let folder_path = Path::new(folder.uri.path());
-                let bacon_locations = folder_path.join(&locations_file);
+                let bacon_locations = folder_path.join(locations_file);
 
                 match File::open(&bacon_locations).await {
                     Ok(fd) => {
@@ -219,18 +227,31 @@ impl BaconLs {
         }
     }
 
-    async fn diagnostics_vec(&self, uri: Option<&Url>) -> Vec<Diagnostic> {
-        self.diagnostics(uri)
+    async fn diagnostics_vec(
+        uri: Option<&Url>,
+        locations_file: &str,
+        workspace_folders: Option<&[WorkspaceFolder]>,
+    ) -> Vec<Diagnostic> {
+        Self::diagnostics(uri, locations_file, workspace_folders)
             .await
             .into_iter()
             .map(|(_, y)| y)
             .collect::<Vec<Diagnostic>>()
     }
 
-    async fn publish_diagnostics(&self, uri: &Url) {
-        if let Some(client) = self.client.as_ref() {
+    async fn publish_diagnostics(
+        client: Option<&Arc<Client>>,
+        uri: &Url,
+        locations_file: &str,
+        workspace_folders: Option<&[WorkspaceFolder]>,
+    ) {
+        if let Some(client) = client {
             client
-                .publish_diagnostics(uri.clone(), self.diagnostics_vec(Some(uri)).await, None)
+                .publish_diagnostics(
+                    uri.clone(),
+                    Self::diagnostics_vec(Some(uri), locations_file, workspace_folders).await,
+                    None,
+                )
                 .await;
         }
     }
@@ -428,14 +449,14 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
                                     diagnostics.push((path, diagnostic));
                                 }}"#
         ).unwrap();
-        let bacon_ls = BaconLs::default();
-        let mut state = bacon_ls.state.write().await;
-        state.workspace_folders = Some(vec![WorkspaceFolder {
+        // let bacon_ls = BaconLs::default();
+        // let mut state = bacon_ls.state.write().await;
+        let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        drop(state);
-        let diagnostics = bacon_ls.diagnostics(Some(&error_path_url)).await;
+        let diagnostics =
+            BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 4);
         assert!(diagnostics[0].1.data.is_none());
         assert_eq!(diagnostics[0].1.message.len(), 34);
@@ -480,14 +501,11 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         )
         .unwrap();
 
-        let bacon_ls = BaconLs::default();
-        let mut state = bacon_ls.state.write().await;
-        state.workspace_folders = Some(vec![WorkspaceFolder {
+        let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        drop(state);
-        let diagnostics = bacon_ls.diagnostics(Some(&error_path_url)).await;
+        let diagnostics = BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 3);
     }
 }

@@ -59,6 +59,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Replacement code actions as suggested by `clippy`.
 * Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
 * Start `bacon` in background based on user preferences (requires `bacon` 3.8.0).
+* Synchronize diagnostics for all open files. 
 
 ### Limitations
 
@@ -123,7 +124,7 @@ supports the following values:
 
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
-- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
+- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 2000).
 - `updateOnChange` Try to update diagnostics every time the file changes (default: true).
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
@@ -256,4 +257,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Validate `bacon` preferences and return an error to the LSP client if they are not compatible with `bacon` - working from `bacon-ls` 0.9.0
 - ✅ Create `bacon` preferences file if not found on disk - working from `bacon-ls` 0.10.0
 - ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
+- ✅ Synchronize diagnostics for all open files - working from `bacon-ls` 0.10.0
 - 🌍 Emacs configuration
