@@ -94,8 +94,12 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.8.0  # make sure you have at least 3.8.0
 ❯❯❯ bacon-ls --version
-0.10.0        # make sure you have at least 0.10.0
+0.12.0        # make sure you have at least 0.12.0
 ```
+
+### Nix
+
+Both [bacon](https://github.com/Canop/bacon/blob/main/flake.nix) and [bacon-ls](./flake.nix) can be consumed from their Nix flakes.
 
 ## Configuration
 
@@ -277,4 +281,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
 - ✅ Synchronize diagnostics for all open files - working from `bacon-ls` 0.10.0
 - ✅ Support Helix editor - working from bacon-ls 0.12.0
+- ✅ Nix flake support
 - 🌍 Emacs configuration
