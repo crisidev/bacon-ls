@@ -378,7 +378,7 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     const ERROR_LINE: &str = "error|:|/app/github/bacon-ls/src/lib.rs|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error|:|none";
 
@@ -433,7 +433,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_multiline_diagnostics_production() {
-        let tmp_dir = TempDir::new("bacon-ls").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
         let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
@@ -505,7 +505,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_diagnostics_production_and_deduplication() {
-        let tmp_dir = TempDir::new("bacon-ls").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
         let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());

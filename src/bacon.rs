@@ -196,7 +196,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_valid_bacon_preferences() {
@@ -213,7 +213,7 @@ mod tests {
             path = "{LOCATIONS_FILE}"
         "#
         );
-        let tmp_dir = TempDir::new("bacon").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("prefs.toml");
         let mut file = std::fs::File::create(&file_path).unwrap();
         write!(file, "{}", valid_toml).unwrap();
@@ -236,7 +236,7 @@ mod tests {
         "#
         );
 
-        let tmp_dir = TempDir::new("bacon").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("prefs.toml");
         let mut file = std::fs::File::create(&file_path).unwrap();
         write!(file, "{}", invalid_toml).unwrap();
@@ -259,7 +259,7 @@ mod tests {
         "#
         );
 
-        let tmp_dir = TempDir::new("bacon").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("prefs.toml");
         let mut file = std::fs::File::create(&file_path).unwrap();
         write!(file, "{}", invalid_toml).unwrap();
@@ -300,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_write_failure() {
-        let tmp_dir = TempDir::new("bacon").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("prefs.toml");
         // Simulate write failure by closing the file prematurely
         let file = File::create(&file_path).await.unwrap();
@@ -311,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_bacon_preferences_file() {
-        let tmp_dir = TempDir::new("bacon").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("empty_prefs.toml");
         std::fs::File::create(&file_path).unwrap();
         assert!(Bacon::validate_preferences_file(&file_path).await.is_err());
