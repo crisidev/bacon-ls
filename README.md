@@ -26,6 +26,7 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
     * [VSCode](#vscode)
     * [Mason.nvim](#mason.nvim)
     * [Manual](#manual)
+    * [Nix](#nix)
 * [Configuration](#configuration)
     * [Neovim - LazyVim](#neovim---lazyvim)
     * [Neovim - Manual](#neovim---manual)
