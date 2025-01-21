@@ -41,4 +41,3 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 tempfile = "3.15.0"
-tempdir = "0.3.7"

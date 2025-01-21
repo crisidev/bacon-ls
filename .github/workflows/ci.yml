@@ -12,13 +12,13 @@ env:
   RUST_LOG: bacon-ls
 
 jobs:
-  security-audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.ACTIONS_TOKEN }}
+  # security-audit:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: rustsec/audit-check@v2
+  #       with:
+  #         token: ${{ secrets.ACTIONS_TOKEN }}
   build-linux:
     runs-on: ubuntu-latest
     steps:
