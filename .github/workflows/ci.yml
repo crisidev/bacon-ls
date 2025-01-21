@@ -12,6 +12,13 @@ env:
   RUST_LOG: bacon-ls
 
 jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -22,7 +29,6 @@ jobs:
         RUST_LOG: debug,globset=warn
     - run: cargo fmt --all -- --check
     - run: cargo clippy --all-targets
-    - run: cargo build
     - uses: actions/setup-node@v4
       with:
         node-version-file: package.json
