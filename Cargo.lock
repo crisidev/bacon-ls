@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "bacon-ls"
-version = "0.13.0-dev"
+version = "0.13.0"
 dependencies = [
  "ansi-regex",
  "argh",
