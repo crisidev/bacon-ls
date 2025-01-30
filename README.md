@@ -95,7 +95,7 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.8.0  # make sure you have at least 3.8.0
 ❯❯❯ bacon-ls --version
-0.12.0        # make sure you have at least 0.12.0
+0.13.0        # make sure you have at least 0.13.0
 ```
 
 ### Nix
@@ -116,7 +116,7 @@ need_stdout = true
 [exports.cargo-json-spans]
 auto = true
 exporter = "analyzer"
-line_format = "{diagnostic.level}|:|{span.file_name}|:|{span.line_start}|:|{span.line_end}|:|{span.column_start}|:|{span.column_end}|:|{diagnostic.message}|:|{span.suggested_replacement}"
+line_format = "{diagnostic.level}|:|{span.file_name}|:|{span.line_start}|:|{span.line_end}|:|{span.column_start}|:|{span.column_end}|:|{diagnostic.message}|:|{diagnostic.rendered}|:|{span.suggested_replacement}"
 path = ".bacon-locations"
 ```
 
