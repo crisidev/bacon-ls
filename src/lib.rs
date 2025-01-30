@@ -302,9 +302,9 @@ impl BaconLs {
 
     fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
         // Split line into parts; expect exactly 7 parts in the format specified.
-        let line_split: Vec<_> = line.splitn(8, "|:|").collect();
+        let line_split: Vec<_> = line.splitn(9, "|:|").collect();
 
-        if line_split.len() != 8 {
+        if line_split.len() != 9 {
             tracing::error!(
                 "malformed line: expected 8 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|replacement` but found {}: {}",
                 line_split.len(),
@@ -336,13 +336,16 @@ impl BaconLs {
         };
 
         let mut message = line_split[6].replace("\\n", "\n");
-        let replacement = line_split[7];
+        let rendered_message = line_split[7];
+        if rendered_message != "none" {
+            let re = ansi_regex::ansi_regex();
+            message = re.replace_all(rendered_message, "").to_string();
+        }
+        let replacement = line_split[8];
         let data = if replacement != "none" {
             tracing::debug!(
                 "storing potential quick fix code action to replace word with {replacement}"
             );
-            message.push_str(": ");
-            message.push_str(replacement);
             Some(serde_json::json!(DiagnosticData {
                 corrections: vec![replacement.into()]
             }))
@@ -380,7 +383,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
-    const ERROR_LINE: &str = "error|:|/app/github/bacon-ls/src/lib.rs|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error|:|none";
+    const ERROR_LINE: &str = "error|:|/app/github/bacon-ls/src/lib.rs|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope\n    |\n352 |         one\n    |         ^^^ help: a unit variant with a similar name exists: `None`\n    |\n   ::: /Users/matteobigoi/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:576:5\n    |\n576 |     None,\n    |     ---- similarly named unit variant `None` defined here\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `bacon-ls` (lib) due to 1 previous error|:|none|:|none";
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
@@ -440,12 +443,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "warning|:|src/lib.rs|:|130|:|142|:|33|:|34|:|this if statement can be collapsed|:|none"
+            "warning|:|src/lib.rs|:|130|:|142|:|33|:|34|:|this if statement can be collapsed|:|none|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help|:|{error_path}|:|130|:|142|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
+            r#"help|:|{error_path}|:|130|:|142|:|33|:|34|:|collapse nested if block|:|none|:|if Some(&path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
                                             existing_path.path() == path.path()
                                                 && diagnostic.range == existing_diagnostic.range
@@ -459,12 +462,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         ).unwrap();
         writeln!(
             tmp_file,
-            "warning|:|{error_path}|:|150|:|162|:|33|:|34|:|this if statement can be collapsed|:|none"
+            "warning|:|{error_path}|:|150|:|162|:|33|:|34|:|this if statement can be collapsed|:|none|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
+            r#"help|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|none|:|if Some(&path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
                                             existing_path.path() == path.path()
                                                 && diagnostic.range == existing_diagnostic.range
@@ -476,8 +479,21 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
                                     diagnostics.push((path, diagnostic));
                                 }}"#
         ).unwrap();
-        // let bacon_ls = BaconLs::default();
-        // let mut state = bacon_ls.state.write().await;
+        writeln!(
+            tmp_file,
+            r#"error|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
+                                        |(existing_path, existing_diagnostic)| {{
+                                            existing_path.path() == path.path()
+                                                && diagnostic.range == existing_diagnostic.range
+                                                && diagnostic.severity
+                                                    == existing_diagnostic.severity
+                                                && diagnostic.message == existing_diagnostic.message
+                                        }},
+                                    ) {{
+                                    diagnostics.push((path, diagnostic));
+                                }}|:|none"#
+        ).unwrap();
+
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
@@ -488,15 +504,17 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             workspace_folders.as_deref(),
         )
         .await;
-        assert_eq!(diagnostics.len(), 4);
+        assert_eq!(diagnostics.len(), 5);
         assert!(diagnostics[0].1.data.is_none());
         assert_eq!(diagnostics[0].1.message.len(), 34);
         assert!(diagnostics[1].1.data.is_some());
-        assert_eq!(diagnostics[1].1.message.len(), 780);
+        assert_eq!(diagnostics[1].1.message.len(), 24);
         assert!(diagnostics[2].1.data.is_none());
         assert_eq!(diagnostics[2].1.message.len(), 34);
         assert!(diagnostics[3].1.data.is_some());
-        assert_eq!(diagnostics[3].1.message.len(), 780);
+        assert_eq!(diagnostics[3].1.message.len(), 24);
+        assert!(diagnostics[4].1.data.is_none());
+        assert_eq!(diagnostics[4].1.message.len(), 754);
     }
 
     // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
@@ -512,23 +530,23 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
-            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none"
+            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none|:|none"
         )
         .unwrap();
         // duplicate the line
         writeln!(
             tmp_file,
-            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none"
+            "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "warning|:|{error_path}|:|354|:|354|:|9|:|20|:|cannot find value `two` in this scope|:|some"
+            "warning|:|{error_path}|:|354|:|354|:|9|:|20|:|cannot find value `two` in this scope|:|some|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            "help|:|{error_path}|:|356|:|356|:|9|:|20|:|cannot find value `three` in this scope|:|some other"
+            "help|:|{error_path}|:|356|:|356|:|9|:|20|:|cannot find value `three` in this scope|:|none|:|some other"
         )
         .unwrap();
 
