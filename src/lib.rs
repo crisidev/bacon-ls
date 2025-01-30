@@ -161,15 +161,23 @@ impl BaconLs {
                             if is_new_diagnostic {
                                 // Process the collected buffer before starting a new entry
                                 if !buffer.is_empty() {
-                                    if let Some((path, diagnostic)) =
+                                    if let Some((path, (diagnostic, diagnostic_extra))) =
                                         Self::parse_bacon_diagnostic_line(&buffer, folder_path)
                                     {
                                         Self::deduplicate_diagnostics(
-                                            path,
+                                            path.clone(),
                                             uri,
                                             diagnostic,
                                             &mut diagnostics,
                                         );
+                                        if let Some(diagnostic) = diagnostic_extra {
+                                            Self::deduplicate_diagnostics(
+                                                path,
+                                                uri,
+                                                diagnostic,
+                                                &mut diagnostics,
+                                            );
+                                        }
                                     }
                                 }
                                 // Reset buffer for new diagnostic entry
@@ -185,15 +193,23 @@ impl BaconLs {
 
                         // Flush the remaining buffer after loop ends
                         if !buffer.is_empty() {
-                            if let Some((path, diagnostic)) =
+                            if let Some((path, (diagnostic, diagnostic_extra))) =
                                 Self::parse_bacon_diagnostic_line(&buffer, folder_path)
                             {
                                 Self::deduplicate_diagnostics(
-                                    path,
+                                    path.clone(),
                                     uri,
                                     diagnostic,
                                     &mut diagnostics,
                                 );
+                                if let Some(diagnostic) = diagnostic_extra {
+                                    Self::deduplicate_diagnostics(
+                                        path,
+                                        uri,
+                                        diagnostic,
+                                        &mut diagnostics,
+                                    );
+                                }
                             }
                         }
                     }
@@ -217,7 +233,7 @@ impl BaconLs {
                 .iter()
                 .any(|(existing_path, existing_diagnostic)| {
                     existing_path.path() == path.path()
-                        && diagnostic.range == existing_diagnostic.range
+                        // && diagnostic.range == existing_diagnostic.range
                         && diagnostic.severity == existing_diagnostic.severity
                         && diagnostic.message == existing_diagnostic.message
                 })
@@ -300,13 +316,16 @@ impl BaconLs {
         Some((line_start, line_end, column_start, column_end))
     }
 
-    fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
+    fn parse_bacon_diagnostic_line(
+        line: &str,
+        folder_path: &Path,
+    ) -> Option<(Url, (Diagnostic, Option<Diagnostic>))> {
         // Split line into parts; expect exactly 7 parts in the format specified.
         let line_split: Vec<_> = line.splitn(9, "|:|").collect();
 
         if line_split.len() != 9 {
             tracing::error!(
-                "malformed line: expected 8 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|replacement` but found {}: {}",
+                "malformed line: expected 8 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|rendered_message|:|replacement` but found {}: {}",
                 line_split.len(),
                 line
             );
@@ -335,12 +354,10 @@ impl BaconLs {
             }
         };
 
-        let mut message = line_split[6].replace("\\n", "\n");
-        let rendered_message = line_split[7];
-        if rendered_message != "none" {
-            let re = ansi_regex::ansi_regex();
-            message = re.replace_all(rendered_message, "").to_string();
-        }
+        let message = line_split[6]
+            .replace("\\n", "\n")
+            .trim_end_matches('\n')
+            .to_string();
         let replacement = line_split[8];
         let data = if replacement != "none" {
             tracing::debug!(
@@ -365,12 +382,40 @@ impl BaconLs {
             ),
             severity: Some(severity),
             source: Some(PKG_NAME.to_string()),
-            message,
+            message: message.clone(),
             data,
             ..Diagnostic::default()
         };
+        let mut diagnostic_extra = None;
+        let rendered_message = line_split[7];
+        if rendered_message != "none" {
+            let re = ansi_regex::ansi_regex();
 
-        Some((path, diagnostic))
+            let mut render = re
+                .replace_all(rendered_message, "")
+                .trim_end_matches('\n')
+                .to_string();
+            let split_render = render.lines().collect::<Vec<_>>();
+            if !split_render.is_empty() && split_render[0].contains(&message) {
+                render = split_render
+                    .into_iter()
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+
+            diagnostic_extra = Some(Diagnostic {
+                range: Range::new(
+                    Position::new(line_start - 1, column_start - 1),
+                    Position::new(line_end - 1, column_end - 1),
+                ),
+                severity: Some(DiagnosticSeverity::HINT),
+                source: Some(PKG_NAME.to_string()),
+                message: render,
+                ..Diagnostic::default()
+            });
+        }
+        Some((path, (diagnostic, diagnostic_extra)))
     }
 }
 
@@ -389,7 +434,7 @@ mod tests {
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
         let result =
             BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
-        let (url, diagnostic) = result.unwrap();
+        let (url, (diagnostic, _)) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
@@ -410,7 +455,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         );
         let result =
             BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
-        let (url, diagnostic) = result.unwrap();
+        let (url, (diagnostic, _)) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.source, Some(PKG_NAME.to_string()));
@@ -448,9 +493,9 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help|:|{error_path}|:|130|:|142|:|33|:|34|:|collapse nested if block|:|none|:|if Some(&path) == uri && !diagnostics.iter().any(
+            r#"help|:|{error_path}|:|130|:|142|:|33|:|34|:|collapse nested if block|:|none|:|if Some(&the_path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
-                                            existing_path.path() == path.path()
+                                            existing_path.path() == the_path.path()
                                                 && diagnostic.range == existing_diagnostic.range
                                                 && diagnostic.severity
                                                     == existing_diagnostic.severity
@@ -462,28 +507,14 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         ).unwrap();
         writeln!(
             tmp_file,
-            "warning|:|{error_path}|:|150|:|162|:|33|:|34|:|this if statement can be collapsed|:|none|:|none"
+            "warning|:|{error_path}|:|150|:|162|:|33|:|34|:|this if statement can be collapsed again|:|none|:|none"
         )
         .unwrap();
         writeln!(
             tmp_file,
-            r#"help|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|none|:|if Some(&path) == uri && !diagnostics.iter().any(
+            r#"warning|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|if Some(&other_path) == uri && !diagnostics.iter().any(
                                         |(existing_path, existing_diagnostic)| {{
-                                            existing_path.path() == path.path()
-                                                && diagnostic.range == existing_diagnostic.range
-                                                && diagnostic.severity
-                                                    == existing_diagnostic.severity
-                                                && diagnostic.message == existing_diagnostic.message
-                                        }},
-                                    ) {{
-                                    diagnostics.push((path, diagnostic));
-                                }}"#
-        ).unwrap();
-        writeln!(
-            tmp_file,
-            r#"error|:|{error_path}|:|150|:|162|:|33|:|34|:|collapse nested if block|:|if Some(&path) == uri && !diagnostics.iter().any(
-                                        |(existing_path, existing_diagnostic)| {{
-                                            existing_path.path() == path.path()
+                                            existing_path.path() == other_path.path()
                                                 && diagnostic.range == existing_diagnostic.range
                                                 && diagnostic.severity
                                                     == existing_diagnostic.severity
@@ -510,11 +541,11 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         assert!(diagnostics[1].1.data.is_some());
         assert_eq!(diagnostics[1].1.message.len(), 24);
         assert!(diagnostics[2].1.data.is_none());
-        assert_eq!(diagnostics[2].1.message.len(), 34);
-        assert!(diagnostics[3].1.data.is_some());
+        assert_eq!(diagnostics[2].1.message.len(), 40);
+        assert!(diagnostics[3].1.data.is_none());
         assert_eq!(diagnostics[3].1.message.len(), 24);
         assert!(diagnostics[4].1.data.is_none());
-        assert_eq!(diagnostics[4].1.message.len(), 754);
+        assert_eq!(diagnostics[4].1.message.len(), 766);
     }
 
     // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
@@ -560,14 +591,14 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             workspace_folders.as_deref(),
         )
         .await;
-        assert_eq!(diagnostics.len(), 3);
+        assert_eq!(diagnostics.len(), 4);
         let diagnostics_vec = BaconLs::diagnostics_vec(
             Some(&error_path_url),
             LOCATIONS_FILE,
             workspace_folders.as_deref(),
         )
         .await;
-        assert_eq!(diagnostics_vec.len(), 3);
+        assert_eq!(diagnostics_vec.len(), 4);
     }
 
     #[test]
