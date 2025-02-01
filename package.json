@@ -92,8 +92,8 @@
     "esbuild-base": "esbuild ./vscode/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
     "build": "npm run esbuild-base -- --sourcemap",
     "watch": "npm run esbuild-base -- --sourcemap --watch",
-    "lint": "prettier --check . && eslint vscode --ext ts",
-    "fix": "prettier --write . && eslint vscode --ext ts --fix",
+    "lint": "prettier --check . && eslint",
+    "fix": "prettier --write . && eslint --fix",
     "pretest": "tsc && npm run build",
     "test": "cross-env BACON_LS_PATH=$PWD/target/debug/bacon-ls node ./out/test/runTest.js"
   },
