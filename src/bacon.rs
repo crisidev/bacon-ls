@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
@@ -147,37 +148,47 @@ impl Bacon {
     pub(crate) async fn run_in_background(
         bacon_command: &str,
         bacon_command_args: &str,
+        current_dir: Option<&PathBuf>,
     ) -> Result<JoinHandle<()>, String> {
         tracing::info!("starting bacon in background with arguments `{bacon_command_args}`");
-        match Command::new(bacon_command)
+        let log_bacon = env::var("BACON_LS_LOG_BACON").unwrap_or("on".to_string());
+        let mut command = Command::new(bacon_command);
+        command
             .args(bacon_command_args.split_whitespace().collect::<Vec<&str>>())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        if let Some(current_dir) = current_dir {
+            command.current_dir(current_dir);
+        }
+
+        match command.spawn() {
             Ok(mut child) => {
                 // Handle stdout
-                if let Some(stdout) = child.stdout.take() {
-                    let reader = BufReader::new(stdout).lines();
-                    tokio::spawn(async move {
-                        let mut reader = reader;
-                        while let Ok(Some(line)) = reader.next_line().await {
-                            tracing::info!("[bacon stdout]: {}", line);
-                        }
-                    });
+                if log_bacon != "off" {
+                    if let Some(stdout) = child.stdout.take() {
+                        let reader = BufReader::new(stdout).lines();
+                        tokio::spawn(async move {
+                            let mut reader = reader;
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                tracing::info!("[bacon stdout]: {}", line);
+                            }
+                        });
+                    }
                 }
 
                 // Handle stderr
-                if let Some(stderr) = child.stderr.take() {
-                    let reader = BufReader::new(stderr).lines();
-                    tokio::spawn(async move {
-                        let mut reader = reader;
-                        while let Ok(Some(line)) = reader.next_line().await {
-                            tracing::error!("[bacon stderr]: {}", line);
-                        }
-                    });
+                if log_bacon != "off" {
+                    if let Some(stderr) = child.stderr.take() {
+                        let reader = BufReader::new(stderr).lines();
+                        tokio::spawn(async move {
+                            let mut reader = reader;
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                tracing::error!("[bacon stderr]: {}", line);
+                            }
+                        });
+                    }
                 }
 
                 // Wait for the child process to finish
@@ -319,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_in_background() {
-        let handle = Bacon::run_in_background("echo", "I am running").await;
+        let handle = Bacon::run_in_background("echo", "I am running", None).await;
         assert!(handle.is_ok());
         handle.unwrap().abort();
     }

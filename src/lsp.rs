@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, env, time::Duration};
 
 use tower_lsp::{
     jsonrpc,
@@ -165,7 +165,13 @@ impl LanguageServer for BaconLs {
             }
 
             if run_bacon {
-                match Bacon::run_in_background("bacon", &bacon_command_args).await {
+                let mut current_dir = None;
+                if let Ok(cwd) = env::current_dir() {
+                    current_dir = Self::find_git_root_directory(&cwd).await;
+                }
+                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref())
+                    .await
+                {
                     Ok(command) => {
                         tracing::info!(
                             "bacon was started successfully and is running in the background"
@@ -199,14 +205,14 @@ impl LanguageServer for BaconLs {
         tracing::debug!("client sent didOpen request");
         let mut state = self.state.write().await;
         state.open_files.insert(params.text_document.uri.clone());
-        let locations_file = state.locations_file.clone();
+        let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
         let client = self.client.clone();
         Self::publish_diagnostics(
             client.as_ref(),
             &params.text_document.uri,
-            &locations_file,
+            &locations_file_name,
             workspace_folders.as_deref(),
         )
         .await;
@@ -216,14 +222,14 @@ impl LanguageServer for BaconLs {
         tracing::debug!("client sent didClose request");
         let mut state = self.state.write().await;
         state.open_files.remove(&params.text_document.uri);
-        let locations_file = state.locations_file.clone();
+        let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
         let client = self.client.clone();
         Self::publish_diagnostics(
             client.as_ref(),
             &params.text_document.uri,
-            &locations_file,
+            &locations_file_name,
             workspace_folders.as_deref(),
         )
         .await;
@@ -233,7 +239,7 @@ impl LanguageServer for BaconLs {
         let state = self.state.read().await;
         let update_on_save = state.update_on_save;
         let update_on_save_wait_millis = state.update_on_save_wait_millis;
-        let locations_file = state.locations_file.clone();
+        let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
         tracing::debug!("client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
@@ -243,7 +249,7 @@ impl LanguageServer for BaconLs {
             Self::publish_diagnostics(
                 client.as_ref(),
                 &params.text_document.uri,
-                &locations_file,
+                &locations_file_name,
                 workspace_folders.as_deref(),
             )
             .await;
@@ -253,7 +259,7 @@ impl LanguageServer for BaconLs {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let state = self.state.read().await;
         let update_on_change = self.state.read().await.update_on_change;
-        let locations_file = state.locations_file.clone();
+        let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
         drop(state);
         tracing::debug!("client sent didChange request, updateOnChange is {update_on_change}");
@@ -262,7 +268,7 @@ impl LanguageServer for BaconLs {
             Self::publish_diagnostics(
                 client.as_ref(),
                 &params.text_document.uri,
-                &locations_file,
+                &locations_file_name,
                 workspace_folders.as_deref(),
             )
             .await;
@@ -287,7 +293,7 @@ impl LanguageServer for BaconLs {
                 (Url::parse(&file.old_uri), Url::parse(&file.new_uri))
             {
                 let mut state = self.state.write().await;
-                let locations_file = state.locations_file.clone();
+                let locations_file_name = state.locations_file.clone();
                 let workspace_folders = state.workspace_folders.clone();
                 state.open_files.remove(&old_uri);
                 state.open_files.insert(new_uri.clone());
@@ -295,7 +301,7 @@ impl LanguageServer for BaconLs {
                 Self::publish_diagnostics(
                     self.client.as_ref(),
                     &new_uri,
-                    &locations_file,
+                    &locations_file_name,
                     workspace_folders.as_deref(),
                 )
                 .await;
