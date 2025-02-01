@@ -10,16 +10,13 @@ homepage = "https://github.com/crisidev/bacon-ls"
 repository = "https://github.com/crisidev/bacon-ls"
 license-file = "LICENSE"
 keywords = ["lsp", "bacon", "tokio", "neovim", "vim"]
-categories = [
-    "command-line-utilities",
-    "text-editors",
-    "asynchronous",
-    "development-tools",
-]
+categories = ["command-line-utilities", "text-editors", "asynchronous"]
 
 [dependencies]
 ansi-regex = "0.1.0"
 argh = "0.1.13"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
 tokio = { version = "1.43.0", features = [
     "fs",
     "io-std",
@@ -29,8 +26,6 @@ tokio = { version = "1.43.0", features = [
     "rt-multi-thread",
     "time",
 ] }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.138"
 toml = "0.8"
 tower-lsp = "0.20.0"
 tracing = "0.1.41"

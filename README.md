@@ -62,6 +62,7 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
 * Start `bacon` in background based on user preferences (requires `bacon` 3.8.0).
 * Synchronize diagnostics for all open files. 
+* Support [cargo workspaces](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html).
 
 ### Limitations
 
@@ -95,7 +96,7 @@ First, install [Bacon](https://dystroy.org/bacon/#installation) and `bacon-ls` �
 ❯❯❯ bacon --version
 bacon 3.8.0  # make sure you have at least 3.8.0
 ❯❯❯ bacon-ls --version
-0.13.0        # make sure you have at least 0.13.0
+0.14.0        # make sure you have at least 0.14.0
 ```
 
 ### Nix
@@ -109,7 +110,7 @@ To find where the file should be saved, you can use the command `bacon --prefs`:
 
 ```toml
 [jobs.bacon-ls]
-command = [ "cargo", "clippy", "--tests", "--all-targets", "--all-features", "--message-format", "json-diagnostic-rendered-ansi" ]
+command = [ "cargo", "clippy", "--workspace", "--tests", "--all-targets", "--all-features", "--message-format", "json-diagnostic-rendered-ansi" ]
 analyzer = "cargo_json"
 need_stdout = true
 
@@ -281,6 +282,7 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Create `bacon` preferences file if not found on disk - working from `bacon-ls` 0.10.0
 - ✅ Start `bacon` in background based on user preferences - working from `bacon-ls` 0.10.0
 - ✅ Synchronize diagnostics for all open files - working from `bacon-ls` 0.10.0
-- ✅ Support Helix editor - working from bacon-ls 0.12.0
+- ✅ Support Helix editor - working from `bacon-ls` 0.12.0
 - ✅ Nix flake support
+- ✅ Support [cargo workspaces](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html) - working from `bacon-ls` 0.14.0
 - 🌍 Emacs configuration
