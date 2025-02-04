@@ -278,6 +278,7 @@ impl BaconLs {
                 .iter()
                 .any(|(existing_path, existing_diagnostic)| {
                     (existing_path.path() == path.path()
+                        && diagnostic.range == existing_diagnostic.range
                         && diagnostic.severity == existing_diagnostic.severity
                         && diagnostic.message == existing_diagnostic.message)
                         || (diagnostic.severity == Some(DiagnosticSeverity::HINT)
