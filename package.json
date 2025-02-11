@@ -32,7 +32,7 @@
     "commands": [
       {
         "category": "BaconLs",
-        "command": "bacon_ls.restart",
+        "command": "bacon-ls.restart",
         "title": "Restart"
       }
     ],
