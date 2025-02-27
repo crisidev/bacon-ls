@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::{env, fs};
 
 use argh::FromArgs;
+use notify_debouncer_full::{new_debouncer, DebounceEventResult};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
@@ -325,12 +326,42 @@ impl BaconLs {
         tracing::info!(
             "starting background task in charge of syncronizing diagnostics for all open files"
         );
-        loop {
+        let (tx, rx) = std::sync::mpsc::channel::<DebounceEventResult>();
+
+        let (locations_file, wait_time) = {
+            let state = state.read().await;
+            (
+                state.locations_file.clone(),
+                state.syncronize_all_open_files_wait_millis,
+            )
+        };
+        let mut watcher =
+            new_debouncer(wait_time, None, tx).expect("failed to create file watcher");
+
+        watcher
+            .watch(
+                PathBuf::from(&locations_file),
+                notify::RecursiveMode::Recursive,
+            )
+            .expect("couldn't watch diagnostics file");
+
+        for res in rx {
+            let events = match res {
+                Ok(events) => events,
+                Err(err) => {
+                    tracing::error!(?err, "watch error");
+                    continue;
+                }
+            };
+            // Only publish if the file was modified.
+            if !events.iter().any(|ev| ev.kind.is_modify()) {
+                continue;
+            }
+
             let loop_state = state.read().await;
             let open_files = loop_state.open_files.clone();
             let locations_file = loop_state.locations_file.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
-            let wait_time = loop_state.syncronize_all_open_files_wait_millis;
             drop(loop_state);
             tracing::debug!(
                 "running periodic diagnostic publish for open files `{}`",
@@ -349,7 +380,6 @@ impl BaconLs {
                 )
                 .await;
             }
-            tokio::time::sleep(wait_time).await;
         }
     }
 
