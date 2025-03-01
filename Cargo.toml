@@ -1,6 +1,6 @@
 [package]
 name = "bacon-ls"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 authors = ["Matteo Bigoi <bigo@crisidev.org>"]
 description = "Bacon Language Server"
@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "text-editors", "asynchronous"]
 [dependencies]
 ansi-regex = "0.1.0"
 argh = "0.1.13"
+flume = "0.11.1"
 notify = "8.0.0"
 notify-debouncer-full = "0.5.0"
 serde = { version = "1.0.218", features = ["derive"] }
@@ -28,6 +29,7 @@ tokio = { version = "1.43.0", features = [
     "rt-multi-thread",
     "time",
 ] }
+tokio-util = "0.7.13"
 toml = "0.8"
 tower-lsp = "0.20.0"
 tracing = "0.1.41"
@@ -35,8 +37,6 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
     "env-filter",
     "fmt",
 ] }
-flume = "0.11"
-tokio-util = "0.7"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
