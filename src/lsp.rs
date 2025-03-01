@@ -196,9 +196,9 @@ impl LanguageServer for BaconLs {
         }
         let task_state = self.state.clone();
         let task_client = self.client.clone();
-        tokio::task::spawn(Self::syncronize_diagnostics_for_all_open_files(
-            task_state,
-            task_client,
+        let mut guard = self.state.write().await;
+        guard.sync_files_handle = Some(tokio::task::spawn(
+            Self::syncronize_diagnostics_for_all_open_files(task_state, task_client),
         ));
     }
 
@@ -366,6 +366,9 @@ impl LanguageServer for BaconLs {
         state.cancel_token.cancel();
         if let Some(handle) = state.bacon_command_handle.take() {
             tracing::info!("terminating bacon from running in background");
+            let _ = handle.await;
+        }
+        if let Some(handle) = state.sync_files_handle.take() {
             let _ = handle.await;
         }
         if let Some(client) = self.client.as_ref() {

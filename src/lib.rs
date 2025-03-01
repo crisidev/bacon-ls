@@ -51,6 +51,7 @@ struct State {
     diagnostics_data_supported: bool,
     open_files: HashSet<Url>,
     cancel_token: CancellationToken,
+    sync_files_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for State {
@@ -69,6 +70,7 @@ impl Default for State {
             diagnostics_data_supported: false,
             open_files: HashSet::new(),
             cancel_token: CancellationToken::new(),
+            sync_files_handle: None,
         }
     }
 }
