@@ -143,6 +143,7 @@ impl LanguageServer for BaconLs {
         let bacon_command_args = state.run_bacon_in_background_command_args.clone();
         let create_bacon_prefs = state.create_bacon_preferences_file;
         let validate_prefs = state.validate_bacon_preferences;
+        let cancel_token = state.cancel_token.clone();
         drop(state);
 
         if let Some(client) = self.client.as_ref() {
@@ -169,7 +170,7 @@ impl LanguageServer for BaconLs {
                 if let Ok(cwd) = env::current_dir() {
                     current_dir = Self::find_git_root_directory(&cwd).await;
                 }
-                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref())
+                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref(), cancel_token)
                     .await
                 {
                     Ok(command) => {
@@ -377,11 +378,11 @@ impl LanguageServer for BaconLs {
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
         let mut state = self.state.write().await;
-        if let Some(handle) = state.bacon_command_handle.as_ref() {
-            tracing::info!("terminating bacon from running in background");
-            handle.abort();
-        }
         state.cancel_token.cancel();
+        if let Some(handle) = state.bacon_command_handle.take() {
+            tracing::info!("terminating bacon from running in background");
+            let _ = handle.await;
+        }
         if let Some(handle) = state.sync_handle.take() {
             let _ = handle.await;
         }
