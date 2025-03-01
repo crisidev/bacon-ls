@@ -35,6 +35,8 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
     "env-filter",
     "fmt",
 ] }
+flume = "0.11"
+tokio-util = "0.7"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

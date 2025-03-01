@@ -376,10 +376,14 @@ impl LanguageServer for BaconLs {
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
-        let state = self.state.write().await;
+        let mut state = self.state.write().await;
         if let Some(handle) = state.bacon_command_handle.as_ref() {
             tracing::info!("terminating bacon from running in background");
             handle.abort();
+        }
+        state.cancel_token.cancel();
+        if let Some(handle) = state.sync_handle.take() {
+            let _ = handle.await;
         }
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
