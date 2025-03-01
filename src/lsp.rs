@@ -170,8 +170,13 @@ impl LanguageServer for BaconLs {
                 if let Ok(cwd) = env::current_dir() {
                     current_dir = Self::find_git_root_directory(&cwd).await;
                 }
-                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref(), cancel_token)
-                    .await
+                match Bacon::run_in_background(
+                    "bacon",
+                    &bacon_command_args,
+                    current_dir.as_ref(),
+                    cancel_token,
+                )
+                .await
                 {
                     Ok(command) => {
                         tracing::info!(
