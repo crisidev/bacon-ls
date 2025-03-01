@@ -7,6 +7,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::LOCATIONS_FILE;
 
@@ -149,6 +150,7 @@ impl Bacon {
         bacon_command: &str,
         bacon_command_args: &str,
         current_dir: Option<&PathBuf>,
+        cancel_token: CancellationToken,
     ) -> Result<JoinHandle<()>, String> {
         tracing::info!("starting bacon in background with arguments `{bacon_command_args}`");
         let log_bacon = env::var("BACON_LS_LOG_BACON").unwrap_or("on".to_string());
@@ -194,7 +196,10 @@ impl Bacon {
                 // Wait for the child process to finish
                 Ok(tokio::spawn(async move {
                     tracing::debug!("waiting for bacon to terminate");
-                    let _ = child.wait().await;
+                    tokio::select! {
+                        _ = child.wait() => {},
+                        _ = cancel_token.cancelled() => {},
+                    };
                 }))
             }
             Err(e) => Err(format!("failed to start bacon: {e}")),
@@ -330,8 +335,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_in_background() {
-        let handle = Bacon::run_in_background("echo", "I am running", None).await;
+        let cancel_token = CancellationToken::new();
+        let handle = Bacon::run_in_background("echo", "I am running", None, cancel_token.clone()).await;
         assert!(handle.is_ok());
-        handle.unwrap().abort();
+        cancel_token.cancel();
+        handle.unwrap().await.unwrap();
     }
 }

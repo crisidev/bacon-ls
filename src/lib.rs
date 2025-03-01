@@ -13,6 +13,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tower_lsp::{
     lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder},
     Client, LspService, Server,
@@ -50,6 +51,8 @@ struct State {
     syncronize_all_open_files_wait_millis: Duration,
     diagnostics_data_supported: bool,
     open_files: HashSet<Url>,
+    cancel_token: CancellationToken,
+    sync_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for State {
@@ -68,6 +71,8 @@ impl Default for State {
             syncronize_all_open_files_wait_millis: Duration::from_millis(2000),
             diagnostics_data_supported: false,
             open_files: HashSet::new(),
+            cancel_token: CancellationToken::new(),
+            sync_handle: None,
         }
     }
 }
@@ -326,17 +331,22 @@ impl BaconLs {
         tracing::info!(
             "starting background task in charge of syncronizing diagnostics for all open files"
         );
-        let (tx, rx) = std::sync::mpsc::channel::<DebounceEventResult>();
+        let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
-        let (locations_file, wait_time) = {
+        let (locations_file, wait_time, cancel_token) = {
             let state = state.read().await;
             (
                 state.locations_file.clone(),
                 state.syncronize_all_open_files_wait_millis,
+                state.cancel_token.clone(),
             )
         };
-        let mut watcher =
-            new_debouncer(wait_time, None, tx).expect("failed to create file watcher");
+
+        let mut watcher = new_debouncer(wait_time, None, move |ev: DebounceEventResult| {
+            // Returns an error if all senders are dropped.
+            let _res = tx.send(ev);
+        })
+        .expect("failed to create file watcher");
 
         watcher
             .watch(
@@ -345,7 +355,14 @@ impl BaconLs {
             )
             .expect("couldn't watch diagnostics file");
 
-        for res in rx {
+        while let Some(Ok(res)) = tokio::select! {
+            ev = rx.recv_async() => {
+                Some(ev)
+            }
+            _ = cancel_token.cancelled() => {
+                None
+            }
+        } {
             let events = match res {
                 Ok(events) => events,
                 Err(err) => {
