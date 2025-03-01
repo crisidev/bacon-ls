@@ -130,7 +130,6 @@ supports the following values:
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
 - `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
-- `updateOnChange` Try to update diagnostics every time the file changes (default: true).
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
 - `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
@@ -160,7 +159,6 @@ require("lspconfig").bacon_ls.setup({
     init_options = {
         updateOnSave = true 
         updateOnSaveWaitMillis = 1000
-        updateOnChange = false
         ...
     }
 })
@@ -193,7 +191,6 @@ call coc#config('languageserver', {
       \   'initializationOptions': {
       \     'updateOnSave': v:true, 
       \     'updateOnSaveWaitMillis': 1000,
-      \     'updateOnChange': v:false
       \   },
       \   'settings': {}
       \ }

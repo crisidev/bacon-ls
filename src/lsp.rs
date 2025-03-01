@@ -74,11 +74,6 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
-                if let Some(value) = values.get("updateOnChange") {
-                    state.update_on_change = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
                 if let Some(value) = values.get("validateBaconPreferences") {
                     state.validate_bacon_preferences = value
                         .as_bool()
@@ -262,23 +257,8 @@ impl LanguageServer for BaconLs {
         }
     }
 
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let state = self.state.read().await;
-        let update_on_change = self.state.read().await.update_on_change;
-        let locations_file_name = state.locations_file.clone();
-        let workspace_folders = state.workspace_folders.clone();
-        drop(state);
-        tracing::debug!("client sent didChange request, updateOnChange is {update_on_change}");
-        if update_on_change {
-            let client = self.client.clone();
-            Self::publish_diagnostics(
-                client.as_ref(),
-                &params.text_document.uri,
-                &locations_file_name,
-                workspace_folders.as_deref(),
-            )
-            .await;
-        }
+    async fn did_change(&self, _params: DidChangeTextDocumentParams) {
+        tracing::debug!("client sent didChange request, nothing to do");
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
@@ -386,9 +366,6 @@ impl LanguageServer for BaconLs {
         state.cancel_token.cancel();
         if let Some(handle) = state.bacon_command_handle.take() {
             tracing::info!("terminating bacon from running in background");
-            let _ = handle.await;
-        }
-        if let Some(handle) = state.sync_handle.take() {
             let _ = handle.await;
         }
         if let Some(client) = self.client.as_ref() {

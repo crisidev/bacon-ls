@@ -42,7 +42,6 @@ struct State {
     locations_file: String,
     update_on_save: bool,
     update_on_save_wait_millis: Duration,
-    update_on_change: bool,
     validate_bacon_preferences: bool,
     run_bacon_in_background: bool,
     run_bacon_in_background_command_args: String,
@@ -52,7 +51,6 @@ struct State {
     diagnostics_data_supported: bool,
     open_files: HashSet<Url>,
     cancel_token: CancellationToken,
-    sync_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for State {
@@ -62,7 +60,6 @@ impl Default for State {
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,
             update_on_save_wait_millis: Duration::from_millis(1000),
-            update_on_change: true,
             validate_bacon_preferences: true,
             run_bacon_in_background: true,
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
@@ -72,7 +69,6 @@ impl Default for State {
             diagnostics_data_supported: false,
             open_files: HashSet::new(),
             cancel_token: CancellationToken::new(),
-            sync_handle: None,
         }
     }
 }
