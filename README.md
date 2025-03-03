@@ -43,9 +43,6 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
 
 <!-- vim-markdown-toc -->
 
-**NOTE: bacon-ls 0.5+ has breaking changes and will work only with bacon 3.7+. The README for bacon-ls 0.4
-can be found [here](./README-0.4.md).**
-
 See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 `bacon-ls` 🐽 is meant to be easy to include in your IDE configuration.
