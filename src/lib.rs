@@ -8,15 +8,15 @@ use std::time::Duration;
 use std::{env, fs};
 
 use argh::FromArgs;
-use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::{
-    lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder},
     Client, LspService, Server,
+    lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder},
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -146,18 +146,11 @@ impl BaconLs {
                     folder_path = git_root;
                 }
                 let mut bacon_locations = Vec::new();
-                if let Err(e) = Self::find_bacon_locations(
-                    &folder_path,
-                    locations_file_name,
-                    &mut bacon_locations,
-                ) {
+                if let Err(e) = Self::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
                     tracing::warn!("unable to find valid bacon loctions files: {e}");
                 }
                 for bacon_location in bacon_locations.iter() {
-                    tracing::info!(
-                        "found bacon locations file to parse {}",
-                        bacon_location.display()
-                    );
+                    tracing::info!("found bacon locations file to parse {}", bacon_location.display());
                     match File::open(&bacon_location).await {
                         Ok(fd) => {
                             let reader = BufReader::new(fd);
@@ -165,10 +158,7 @@ impl BaconLs {
                             let mut buffer = String::new();
 
                             while let Some(line) = lines.next_line().await.unwrap_or_else(|e| {
-                                tracing::error!(
-                                    "error reading line from file {}: {e}",
-                                    bacon_location.display()
-                                );
+                                tracing::error!("error reading line from file {}: {e}", bacon_location.display());
                                 None
                             }) {
                                 let trimmed = line.trim_end();
@@ -212,12 +202,7 @@ impl BaconLs {
                                 if let Some((path, diagnostic)) =
                                     Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
                                 {
-                                    Self::deduplicate_diagnostics(
-                                        path.clone(),
-                                        uri,
-                                        diagnostic,
-                                        &mut diagnostics,
-                                    );
+                                    Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
                                 }
                             }
                         }
@@ -242,9 +227,7 @@ impl BaconLs {
             .ok()?;
 
         if output.status.success() {
-            String::from_utf8(output.stdout)
-                .ok()
-                .map(|v| PathBuf::from(v.trim()))
+            String::from_utf8(output.stdout).ok().map(|v| PathBuf::from(v.trim()))
         } else {
             None
         }
@@ -261,10 +244,7 @@ impl BaconLs {
 
             if path.is_dir() {
                 Self::find_bacon_locations(&path, locations_file_name, results)?;
-            } else if path
-                .file_name()
-                .is_some_and(|name| name == locations_file_name)
-            {
+            } else if path.file_name().is_some_and(|name| name == locations_file_name) {
                 results.push(path);
             }
         }
@@ -278,14 +258,12 @@ impl BaconLs {
         diagnostics: &mut Vec<(Url, Diagnostic)>,
     ) {
         if Some(&path) == uri
-            && !diagnostics
-                .iter()
-                .any(|(existing_path, existing_diagnostic)| {
-                    existing_path.path() == path.path()
-                        && diagnostic.range == existing_diagnostic.range
-                        && diagnostic.severity == existing_diagnostic.severity
-                        && diagnostic.message == existing_diagnostic.message
-                })
+            && !diagnostics.iter().any(|(existing_path, existing_diagnostic)| {
+                existing_path.path() == path.path()
+                    && diagnostic.range == existing_diagnostic.range
+                    && diagnostic.severity == existing_diagnostic.severity
+                    && diagnostic.message == existing_diagnostic.message
+            })
         {
             diagnostics.push((path, diagnostic));
         }
@@ -320,13 +298,8 @@ impl BaconLs {
         }
     }
 
-    async fn syncronize_diagnostics_for_all_open_files(
-        state: Arc<RwLock<State>>,
-        client: Option<Arc<Client>>,
-    ) {
-        tracing::info!(
-            "starting background task in charge of syncronizing diagnostics for all open files"
-        );
+    async fn syncronize_diagnostics_for_all_open_files(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
+        tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
         let (locations_file, wait_time, cancel_token) = {
@@ -345,10 +318,7 @@ impl BaconLs {
         .expect("failed to create file watcher");
 
         watcher
-            .watch(
-                PathBuf::from(&locations_file),
-                notify::RecursiveMode::Recursive,
-            )
+            .watch(PathBuf::from(&locations_file), notify::RecursiveMode::Recursive)
             .expect("couldn't watch diagnostics file");
 
         while let Some(Ok(res)) = tokio::select! {
@@ -378,20 +348,10 @@ impl BaconLs {
             drop(loop_state);
             tracing::debug!(
                 "running periodic diagnostic publish for open files `{}`",
-                open_files
-                    .iter()
-                    .map(|f| f.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
+                open_files.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
             );
             for uri in open_files.iter() {
-                Self::publish_diagnostics(
-                    client.as_ref(),
-                    uri,
-                    &locations_file,
-                    workspace_folders.as_deref(),
-                )
-                .await;
+                Self::publish_diagnostics(client.as_ref(), uri, &locations_file, workspace_folders.as_deref()).await;
             }
         }
     }
@@ -431,14 +391,13 @@ impl BaconLs {
         let file_path = folder_path.join(line_split[1]);
 
         // Handle potential parse errors
-        let (line_start, line_end, column_start, column_end) =
-            match Self::parse_positions(&line_split[2..6]) {
-                Some(values) => values,
-                None => {
-                    tracing::error!("error parsing diagnostic position {:?}", &line_split[2..6]);
-                    return None;
-                }
-            };
+        let (line_start, line_end, column_start, column_end) = match Self::parse_positions(&line_split[2..6]) {
+            Some(values) => values,
+            None => {
+                tracing::error!("error parsing diagnostic position {:?}", &line_split[2..6]);
+                return None;
+            }
+        };
 
         let path = match Url::parse(&format!("file://{}", file_path.display())) {
             Ok(url) => url,
@@ -448,15 +407,10 @@ impl BaconLs {
             }
         };
 
-        let mut message = line_split[6]
-            .replace("\\n", "\n")
-            .trim_end_matches('\n')
-            .to_string();
+        let mut message = line_split[6].replace("\\n", "\n").trim_end_matches('\n').to_string();
         let replacement = line_split[8];
         let data = if replacement != "none" {
-            tracing::debug!(
-                "storing potential quick fix code action to replace word with {replacement}"
-            );
+            tracing::debug!("storing potential quick fix code action to replace word with {replacement}");
             Some(serde_json::json!(DiagnosticData {
                 corrections: vec![replacement.into()]
             }))
@@ -505,8 +459,7 @@ mod tests {
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ok() {
-        let result =
-            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
+        let result = BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -526,8 +479,7 @@ mod tests {
 For more information about this error, try `rustc --explain E0425`.
 error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         );
-        let result =
-            BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
+        let result = BaconLs::parse_bacon_diagnostic_line(ERROR_LINE, Path::new("/app/github/bacon-ls"));
         let (url, diagnostic) = result.unwrap();
         assert_eq!(url.to_string(), "file:///app/github/bacon-ls/src/lib.rs");
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
@@ -537,10 +489,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     #[test]
     fn test_parse_bacon_diagnostic_line_with_spans_ko() {
         // Unparsable line
-        let result = BaconLs::parse_bacon_diagnostic_line(
-            "warning:/file:1:1",
-            Path::new("/app/github/bacon-ls"),
-        );
+        let result = BaconLs::parse_bacon_diagnostic_line("warning:/file:1:1", Path::new("/app/github/bacon-ls"));
         assert_eq!(result, None);
 
         // Empty line
@@ -602,12 +551,8 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        let diagnostics = BaconLs::diagnostics(
-            Some(&error_path_url),
-            LOCATIONS_FILE,
-            workspace_folders.as_deref(),
-        )
-        .await;
+        let diagnostics =
+            BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 4);
         assert!(diagnostics[0].1.data.is_none());
         assert_eq!(diagnostics[0].1.message.len(), 34);
@@ -656,19 +601,11 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             name: tmp_dir.path().display().to_string(),
             uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
         }]);
-        let diagnostics = BaconLs::diagnostics(
-            Some(&error_path_url),
-            LOCATIONS_FILE,
-            workspace_folders.as_deref(),
-        )
-        .await;
+        let diagnostics =
+            BaconLs::diagnostics(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 3);
-        let diagnostics_vec = BaconLs::diagnostics_vec(
-            Some(&error_path_url),
-            LOCATIONS_FILE,
-            workspace_folders.as_deref(),
-        )
-        .await;
+        let diagnostics_vec =
+            BaconLs::diagnostics_vec(Some(&error_path_url), LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics_vec.len(), 3);
     }
 
