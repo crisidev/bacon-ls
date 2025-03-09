@@ -1,20 +1,18 @@
 use std::{collections::HashMap, env, time::Duration};
 
 use tower_lsp::{
-    jsonrpc,
+    LanguageServer, jsonrpc,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams,
-        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams,
-        ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
+        CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams,
+        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
+        InitializeResult, InitializedParams, MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+        RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
         TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
     },
-    LanguageServer,
 };
 
-use crate::{bacon::Bacon, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{Backend, BaconLs, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -102,6 +100,16 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
+                if let Some(value) = values.get("useNativeCargoBackend") {
+                    state.backend = if value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                    {
+                        Backend::Native
+                    } else {
+                        Backend::Bacon
+                    };
+                }
             }
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
@@ -111,18 +119,14 @@ impl LanguageServer for BaconLs {
             capabilities: ServerCapabilities {
                 // Only support UTF-16 positions for now, which is the default when unspecified
                 position_encoding: Some(PositionEncodingKind::UTF16),
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
-                )),
-                code_action_provider: Some(CodeActionProviderCapability::Options(
-                    CodeActionOptions {
-                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
-                        work_done_progress_options: WorkDoneProgressOptions {
-                            work_done_progress: Some(false),
-                        },
-                        resolve_provider: None,
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+                    code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: Some(false),
                     },
-                )),
+                    resolve_provider: None,
+                })),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -155,9 +159,7 @@ impl LanguageServer for BaconLs {
                     client.show_message(MessageType::ERROR, e).await;
                 }
             } else {
-                tracing::warn!(
-                    "skipping validation of bacon preferences, validateBaconPreferences is false"
-                );
+                tracing::warn!("skipping validation of bacon preferences, validateBaconPreferences is false");
             }
 
             if run_bacon {
@@ -165,18 +167,9 @@ impl LanguageServer for BaconLs {
                 if let Ok(cwd) = env::current_dir() {
                     current_dir = Self::find_git_root_directory(&cwd).await;
                 }
-                match Bacon::run_in_background(
-                    "bacon",
-                    &bacon_command_args,
-                    current_dir.as_ref(),
-                    cancel_token,
-                )
-                .await
-                {
+                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref(), cancel_token).await {
                     Ok(command) => {
-                        tracing::info!(
-                            "bacon was started successfully and is running in the background"
-                        );
+                        tracing::info!("bacon was started successfully and is running in the background");
                         let mut state = self.state.write().await;
                         state.bacon_command_handle = Some(command);
                         drop(state);
@@ -190,16 +183,15 @@ impl LanguageServer for BaconLs {
                 tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
             }
         } else {
-            tracing::error!(
-                "client doesn't seem to be connected, the LSP server will not function properly"
-            );
+            tracing::error!("client doesn't seem to be connected, the LSP server will not function properly");
         }
         let task_state = self.state.clone();
         let task_client = self.client.clone();
         let mut guard = self.state.write().await;
-        guard.sync_files_handle = Some(tokio::task::spawn(
-            Self::syncronize_diagnostics_for_all_open_files(task_state, task_client),
-        ));
+        guard.sync_files_handle = Some(tokio::task::spawn(Self::syncronize_diagnostics_for_all_open_files(
+            task_state,
+            task_client,
+        )));
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -208,6 +200,7 @@ impl LanguageServer for BaconLs {
         state.open_files.insert(params.text_document.uri.clone());
         let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
+        let backend = state.backend;
         drop(state);
         let client = self.client.clone();
         Self::publish_diagnostics(
@@ -215,6 +208,7 @@ impl LanguageServer for BaconLs {
             &params.text_document.uri,
             &locations_file_name,
             workspace_folders.as_deref(),
+            backend
         )
         .await;
     }
@@ -225,6 +219,7 @@ impl LanguageServer for BaconLs {
         state.open_files.remove(&params.text_document.uri);
         let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
+        let backend = state.backend;
         drop(state);
         let client = self.client.clone();
         Self::publish_diagnostics(
@@ -232,6 +227,7 @@ impl LanguageServer for BaconLs {
             &params.text_document.uri,
             &locations_file_name,
             workspace_folders.as_deref(),
+            backend
         )
         .await;
     }
@@ -242,8 +238,11 @@ impl LanguageServer for BaconLs {
         let update_on_save_wait_millis = state.update_on_save_wait_millis;
         let locations_file_name = state.locations_file.clone();
         let workspace_folders = state.workspace_folders.clone();
+        let backend = state.backend;
         drop(state);
-        tracing::debug!("client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}");
+        tracing::debug!(
+            "client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}"
+        );
         if update_on_save {
             let client = self.client.clone();
             tokio::time::sleep(update_on_save_wait_millis).await;
@@ -252,6 +251,7 @@ impl LanguageServer for BaconLs {
                 &params.text_document.uri,
                 &locations_file_name,
                 workspace_folders.as_deref(),
+                backend
             )
             .await;
         }
@@ -275,12 +275,11 @@ impl LanguageServer for BaconLs {
     async fn did_rename_files(&self, params: RenameFilesParams) {
         tracing::debug!("client sent didRenameFiles request");
         for file in params.files {
-            if let (Ok(old_uri), Ok(new_uri)) =
-                (Url::parse(&file.old_uri), Url::parse(&file.new_uri))
-            {
+            if let (Ok(old_uri), Ok(new_uri)) = (Url::parse(&file.old_uri), Url::parse(&file.new_uri)) {
                 let mut state = self.state.write().await;
                 let locations_file_name = state.locations_file.clone();
                 let workspace_folders = state.workspace_folders.clone();
+                let backend = state.backend;
                 state.open_files.remove(&old_uri);
                 state.open_files.insert(new_uri.clone());
                 drop(state);
@@ -289,16 +288,14 @@ impl LanguageServer for BaconLs {
                     &new_uri,
                     &locations_file_name,
                     workspace_folders.as_deref(),
+                    backend
                 )
                 .await;
             }
         }
     }
 
-    async fn code_action(
-        &self,
-        params: CodeActionParams,
-    ) -> jsonrpc::Result<Option<CodeActionResponse>> {
+    async fn code_action(&self, params: CodeActionParams) -> jsonrpc::Result<Option<CodeActionResponse>> {
         tracing::debug!("code_action: {params:?}");
         let state = self.state.read().await;
         let diagnostics_data_supported = state.diagnostics_data_supported;
@@ -332,19 +329,13 @@ impl LanguageServer for BaconLs {
                                             )])),
                                             ..WorkspaceEdit::default()
                                         }),
-                                        is_preferred: if corrections.len() == 1 {
-                                            Some(true)
-                                        } else {
-                                            None
-                                        },
+                                        is_preferred: if corrections.len() == 1 { Some(true) } else { None },
                                         ..CodeAction::default()
                                     })
                                 })
                                 .collect()
                         } else {
-                            tracing::error!(
-                                "deserialization failed: received {data:?} as diagnostic data",
-                            );
+                            tracing::error!("deserialization failed: received {data:?} as diagnostic data",);
                             vec![]
                         }
                     }
