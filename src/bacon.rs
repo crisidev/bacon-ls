@@ -66,8 +66,7 @@ impl Bacon {
         let toml_content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| format!("{ERROR_MESSAGE}: {e}"))?;
-        let config: BaconConfig =
-            toml::from_str(&toml_content).map_err(|e| format!("{ERROR_MESSAGE}: {e}"))?;
+        let config: BaconConfig = toml::from_str(&toml_content).map_err(|e| format!("{ERROR_MESSAGE}: {e}"))?;
         tracing::debug!("bacon config is {config:#?}");
         if config.jobs.bacon_ls.analyzer == BACON_ANALYZER
             && config.jobs.bacon_ls.need_stdout
@@ -113,10 +112,7 @@ impl Bacon {
         Ok(())
     }
 
-    async fn validate_preferences_impl(
-        bacon_prefs: &[u8],
-        create_prefs_file: bool,
-    ) -> Result<(), String> {
+    async fn validate_preferences_impl(bacon_prefs: &[u8], create_prefs_file: bool) -> Result<(), String> {
         let bacon_prefs_files = String::from_utf8_lossy(bacon_prefs);
         let bacon_prefs_files_split: Vec<&str> = bacon_prefs_files.split("\n").collect();
         let mut preference_file_exists = false;
@@ -309,9 +305,7 @@ mod tests {
         let invalid_path = "/invalid/path/to/file.toml";
         let result = Bacon::create_preferences_file(invalid_path).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("error creating bacon preferences"));
+        assert!(result.unwrap_err().contains("error creating bacon preferences"));
     }
 
     #[tokio::test]
@@ -336,8 +330,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_in_background() {
         let cancel_token = CancellationToken::new();
-        let handle =
-            Bacon::run_in_background("echo", "I am running", None, cancel_token.clone()).await;
+        let handle = Bacon::run_in_background("echo", "I am running", None, cancel_token.clone()).await;
         assert!(handle.is_ok());
         cancel_token.cancel();
         handle.unwrap().await.unwrap();
