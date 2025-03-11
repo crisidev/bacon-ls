@@ -60,11 +60,6 @@ impl LanguageServer for BaconLs {
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                         .to_string();
                 }
-                if let Some(value) = values.get("updateOnSave") {
-                    state.update_on_save = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
                 if let Some(value) = values.get("updateOnSaveWaitMillis") {
                     state.update_on_save_wait_millis = Duration::from_millis(
                         value
@@ -72,26 +67,11 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
-                if let Some(value) = values.get("validateBaconPreferences") {
-                    state.validate_bacon_preferences = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
-                if let Some(value) = values.get("runBaconInBackground") {
-                    state.run_bacon_in_background = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
                 if let Some(value) = values.get("runBaconInBackgroundCommandArguments") {
                     state.run_bacon_in_background_command_args = value
                         .as_str()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                         .to_string();
-                }
-                if let Some(value) = values.get("createBaconPreferencesFile") {
-                    state.create_bacon_preferences_file = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
                 }
                 if let Some(value) = values.get("synchronizeAllOpenFilesWaitMillis") {
                     state.syncronize_all_open_files_wait_millis = Duration::from_millis(
@@ -100,17 +80,42 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
-                if let Some(value) = values.get("useNativeCargoBackend") {
+                if let Some(value) = values.get("useCargoBackend") {
                     state.backend = if value
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                     {
-                        Backend::Native
+                        Backend::Cargo
                     } else {
                         Backend::Bacon
                     };
                 }
+                if let Some(value) = values.get("runBaconInBackground") {
+                    state.run_bacon_in_background = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                }
+                if let Some(value) = values.get("createBaconPreferencesFile") {
+                    state.create_bacon_preferences_file = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                }
+                if let Some(value) = values.get("updateOnSave") {
+                    state.update_on_save = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                }
+                if let Some(value) = values.get("cargoCommandArguments") {
+                    state.cargo_command_args = value
+                        .as_str()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                        .to_string();
+                }
             }
+        }
+        if let Backend::Cargo = state.backend {
+            state.update_on_save = true;
+            state.update_on_save_wait_millis = Duration::ZERO;
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
         drop(state);
@@ -188,82 +193,50 @@ impl LanguageServer for BaconLs {
         let task_state = self.state.clone();
         let task_client = self.client.clone();
         let mut guard = self.state.write().await;
-        guard.sync_files_handle = Some(tokio::task::spawn(Self::syncronize_diagnostics_for_all_open_files(
+        guard.sync_files_handle = Some(tokio::task::spawn(Self::syncronize_diagnostics(
             task_state,
             task_client,
         )));
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        tracing::debug!("client sent didOpen request");
+        tracing::trace!("client sent didOpen request");
         let mut state = self.state.write().await;
         state.open_files.insert(params.text_document.uri.clone());
-        let locations_file_name = state.locations_file.clone();
-        let workspace_folders = state.workspace_folders.clone();
-        let backend = state.backend;
         drop(state);
-        let client = self.client.clone();
-        Self::publish_diagnostics(
-            client.as_ref(),
-            &params.text_document.uri,
-            &locations_file_name,
-            workspace_folders.as_deref(),
-            backend
-        )
-        .await;
+        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        tracing::debug!("client sent didClose request");
+        tracing::trace!("client sent didClose request");
         let mut state = self.state.write().await;
         state.open_files.remove(&params.text_document.uri);
-        let locations_file_name = state.locations_file.clone();
-        let workspace_folders = state.workspace_folders.clone();
-        let backend = state.backend;
         drop(state);
-        let client = self.client.clone();
-        Self::publish_diagnostics(
-            client.as_ref(),
-            &params.text_document.uri,
-            &locations_file_name,
-            workspace_folders.as_deref(),
-            backend
-        )
-        .await;
+        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let state = self.state.read().await;
         let update_on_save = state.update_on_save;
         let update_on_save_wait_millis = state.update_on_save_wait_millis;
-        let locations_file_name = state.locations_file.clone();
-        let workspace_folders = state.workspace_folders.clone();
-        let backend = state.backend;
         drop(state);
         tracing::debug!(
-            "client sent didSave request, updateOnSave is {update_on_save} after waiting bacon for {update_on_save_wait_millis:?}"
+            "client sent didSave request, updateOnSave is {update_on_save} for {} after {update_on_save_wait_millis:?}",
+            params.text_document.uri
         );
         if update_on_save {
-            let client = self.client.clone();
             tokio::time::sleep(update_on_save_wait_millis).await;
-            Self::publish_diagnostics(
-                client.as_ref(),
-                &params.text_document.uri,
-                &locations_file_name,
-                workspace_folders.as_deref(),
-                backend
-            )
-            .await;
+            self.publish_diagnostics(&params.text_document.uri).await;
         }
     }
 
     async fn did_change(&self, _params: DidChangeTextDocumentParams) {
-        tracing::debug!("client sent didChange request, nothing to do");
+        tracing::trace!("client sent didChange request, nothing to do");
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
-        tracing::debug!("client sent didDeleteFiles request");
         for file in params.files {
+            tracing::debug!("client sent didDeleteFiles request for {}", file.uri);
             if let Ok(uri) = Url::parse(&file.uri) {
                 let mut state = self.state.write().await;
                 state.open_files.remove(&uri);
@@ -273,30 +246,24 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
-        tracing::debug!("client sent didRenameFiles request");
         for file in params.files {
+            tracing::debug!(
+                "client sent didRenameFiles request {} -> {}",
+                file.old_uri,
+                file.new_uri
+            );
             if let (Ok(old_uri), Ok(new_uri)) = (Url::parse(&file.old_uri), Url::parse(&file.new_uri)) {
                 let mut state = self.state.write().await;
-                let locations_file_name = state.locations_file.clone();
-                let workspace_folders = state.workspace_folders.clone();
-                let backend = state.backend;
                 state.open_files.remove(&old_uri);
                 state.open_files.insert(new_uri.clone());
                 drop(state);
-                Self::publish_diagnostics(
-                    self.client.as_ref(),
-                    &new_uri,
-                    &locations_file_name,
-                    workspace_folders.as_deref(),
-                    backend
-                )
-                .await;
+                self.publish_diagnostics(&new_uri).await;
             }
         }
     }
 
     async fn code_action(&self, params: CodeActionParams) -> jsonrpc::Result<Option<CodeActionResponse>> {
-        tracing::debug!("code_action: {params:?}");
+        tracing::trace!("client sent codeActions request");
         let state = self.state.read().await;
         let diagnostics_data_supported = state.diagnostics_data_supported;
         drop(state);
@@ -355,12 +322,15 @@ impl LanguageServer for BaconLs {
     async fn shutdown(&self) -> jsonrpc::Result<()> {
         let mut state = self.state.write().await;
         state.cancel_token.cancel();
-        if let Some(handle) = state.bacon_command_handle.take() {
-            tracing::info!("terminating bacon from running in background");
-            let _ = handle.await;
-        }
-        if let Some(handle) = state.sync_files_handle.take() {
-            let _ = handle.await;
+
+        {
+            if let Some(handle) = state.bacon_command_handle.take() {
+                tracing::info!("terminating bacon from running in background");
+                let _ = handle.await;
+            }
+            if let Some(handle) = state.sync_files_handle.take() {
+                let _ = handle.await;
+            }
         }
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");

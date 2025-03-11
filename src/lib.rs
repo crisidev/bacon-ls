@@ -8,23 +8,26 @@ use std::time::Duration;
 
 use argh::FromArgs;
 use bacon::Bacon;
-use notify_debouncer_full::{DebounceEventResult, new_debouncer};
+use native::Cargo;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::{
     Client, LspService, Server,
-    lsp_types::{Diagnostic, Url, WorkspaceFolder},
+    lsp_types::{Url, WorkspaceFolder},
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 
 mod bacon;
 mod lsp;
+mod native;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";
 const BACON_BACKGROUND_COMMAND_ARGS: &str = "--headless -j bacon-ls";
+const CARGO_COMMAND_ARGS: &str =
+    "clippy --tests --all-features --all-targets --message-format json-diagnostic-rendered-ansi";
 
 /// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
@@ -37,7 +40,7 @@ pub struct Args {
 #[derive(Debug, Clone, Copy)]
 enum Backend {
     Bacon,
-    Native,
+    Cargo,
 }
 
 #[derive(Debug)]
@@ -57,6 +60,8 @@ struct State {
     cancel_token: CancellationToken,
     sync_files_handle: Option<JoinHandle<()>>,
     backend: Backend,
+    diagnostics_version: i32,
+    cargo_command_args: String,
 }
 
 impl Default for State {
@@ -76,7 +81,9 @@ impl Default for State {
             open_files: HashSet::new(),
             cancel_token: CancellationToken::new(),
             sync_files_handle: None,
-            backend: Backend::Native,
+            backend: Backend::Cargo,
+            diagnostics_version: 0,
+            cargo_command_args: CARGO_COMMAND_ARGS.to_string(),
         }
     }
 }
@@ -117,7 +124,7 @@ impl BaconLs {
                 .with_thread_names(true)
                 .with_span_events(FmtSpan::CLOSE)
                 .with_line_number(true)
-                .with_target(false)
+                .with_target(true)
                 .compact()
                 .init();
         }
@@ -151,121 +158,51 @@ impl BaconLs {
         }
     }
 
-    fn deduplicate_diagnostics(
-        path: Url,
-        uri: Option<&Url>,
-        diagnostic: Diagnostic,
-        diagnostics: &mut Vec<(Url, Diagnostic)>,
-    ) {
-        if Some(&path) == uri
-            && !diagnostics.iter().any(|(existing_path, existing_diagnostic)| {
-                existing_path.path() == path.path()
-                    && diagnostic.range == existing_diagnostic.range
-                    && diagnostic.severity == existing_diagnostic.severity
-                    && diagnostic.message == existing_diagnostic.message
-            })
-        {
-            diagnostics.push((path, diagnostic));
-        }
-    }
-
-    async fn diagnostics_vec(
-        uri: Option<&Url>,
-        locations_file_name: &str,
-        workspace_folders: Option<&[WorkspaceFolder]>,
-        backend: Backend,
-    ) -> Vec<Diagnostic> {
+    async fn publish_diagnostics(&self, uri: &Url) {
+        let mut guard = self.state.write().await;
+        let locations_file_name = guard.locations_file.clone();
+        let workspace_folders = guard.workspace_folders.clone();
+        let open_files = guard.open_files.clone();
+        let backend = guard.backend;
+        let command_args = guard.cargo_command_args.clone();
+        guard.diagnostics_version += 1;
+        let version = guard.diagnostics_version;
+        drop(guard);
         match backend {
-            Backend::Bacon => Bacon::diagnostics(uri, locations_file_name, workspace_folders)
-                .await
-                .into_iter()
-                .map(|(_, y)| y)
-                .collect::<Vec<Diagnostic>>(),
-            Backend::Native => vec![],
-        }
-    }
-
-    async fn publish_diagnostics(
-        client: Option<&Arc<Client>>,
-        uri: &Url,
-        locations_file_name: &str,
-        workspace_folders: Option<&[WorkspaceFolder]>,
-        backend: Backend,
-    ) {
-        if let Some(client) = client {
-            client
-                .publish_diagnostics(
-                    uri.clone(),
-                    Self::diagnostics_vec(Some(uri), locations_file_name, workspace_folders, backend).await,
-                    None,
-                )
-                .await;
-        }
-    }
-
-    async fn syncronize_diagnostics_for_all_open_files(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
-        tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
-        let (tx, rx) = flume::unbounded::<DebounceEventResult>();
-
-        let (locations_file, wait_time, cancel_token) = {
-            let state = state.read().await;
-            (
-                state.locations_file.clone(),
-                state.syncronize_all_open_files_wait_millis,
-                state.cancel_token.clone(),
-            )
-        };
-
-        let mut watcher = new_debouncer(wait_time, None, move |ev: DebounceEventResult| {
-            // Returns an error if all senders are dropped.
-            let _res = tx.send(ev);
-        })
-        .expect("failed to create file watcher");
-
-        watcher
-            .watch(PathBuf::from(&locations_file), notify::RecursiveMode::Recursive)
-            .expect("couldn't watch diagnostics file");
-
-        while let Some(Ok(res)) = tokio::select! {
-            ev = rx.recv_async() => {
-                Some(ev)
-            }
-            _ = cancel_token.cancelled() => {
-                None
-            }
-        } {
-            let events = match res {
-                Ok(events) => events,
-                Err(err) => {
-                    tracing::error!(?err, "watch error");
-                    continue;
-                }
-            };
-            // Only publish if the file was modified.
-            if !events.iter().any(|ev| ev.kind.is_modify()) {
-                continue;
-            }
-
-            let loop_state = state.read().await;
-            let open_files = loop_state.open_files.clone();
-            let locations_file = loop_state.locations_file.clone();
-            let workspace_folders = loop_state.workspace_folders.clone();
-            let backend = loop_state.backend;
-            drop(loop_state);
-            tracing::debug!(
-                "running periodic diagnostic publish for open files `{}`",
-                open_files.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
-            );
-            for uri in open_files.iter() {
-                Self::publish_diagnostics(
-                    client.as_ref(),
+            Backend::Bacon => {
+                Bacon::publish_diagnostics(
+                    self.client.as_ref(),
                     uri,
-                    &locations_file,
+                    &locations_file_name,
                     workspace_folders.as_deref(),
-                    backend,
                 )
                 .await;
             }
+            Backend::Cargo => {
+                if let Some(client) = self.client.as_ref() {
+                    let diagnostics = Cargo::cargo_diagnostics(&command_args).await.unwrap();
+                    if !diagnostics.contains_key(uri) {
+                        tracing::info!("cleaned up cargo diagnostics for {uri}");
+                        client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
+                    }
+                    for (uri, diagnostics) in diagnostics.into_iter() {
+                        if diagnostics.is_empty() {
+                            tracing::info!("cleaned up cargo diagnostics for {uri}");
+                            client.publish_diagnostics(uri, vec![], Some(version)).await;
+                        } else if open_files.contains(&uri) {
+                            tracing::info!("sent {} cargo diagnostics for {uri}", diagnostics.len());
+                            client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
+        let backend = state.read().await.backend;
+        if let Backend::Bacon = backend {
+            Bacon::syncronize_diagnostics(state, client).await;
         }
     }
 }
