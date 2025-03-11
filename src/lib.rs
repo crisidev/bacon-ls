@@ -88,7 +88,7 @@ impl Default for State {
             open_files: HashSet::new(),
             cancel_token: CancellationToken::new(),
             sync_files_handle: None,
-            backend: Backend::Cargo,
+            backend: Backend::Bacon,
             diagnostics_version: 0,
             cargo_command_args: CARGO_COMMAND_ARGS.to_string(),
             build_folder: tempfile::tempdir().unwrap().path().into(),
