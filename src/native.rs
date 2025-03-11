@@ -1,10 +1,14 @@
-use std::{collections::HashMap, env, error::Error, path::Path, process::Stdio};
+use std::{
+    collections::HashMap,
+    env,
+    error::Error,
+    io,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use serde::{Deserialize, Deserializer};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-};
+use tokio::{fs, process::Command};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
 use crate::{DiagnosticData, PKG_NAME};
@@ -116,25 +120,33 @@ impl Cargo {
         }
         Ok(())
     }
-    pub(crate) async fn cargo_diagnostics(command_args: &str) -> Result<HashMap<Url, Vec<Diagnostic>>, Box<dyn Error>> {
-        let mut child = Command::new("cargo")
+
+    pub(crate) async fn cargo_diagnostics(
+        command_args: &str,
+        destination_folder: &Path,
+    ) -> Result<HashMap<Url, Vec<Diagnostic>>, Box<dyn Error>> {
+        let mut args: Vec<&str> = command_args.split_whitespace().collect();
+        args.push("--manifest-path");
+        let cargo_toml = destination_folder.join("Cargo.toml").display().to_string();
+        args.push(&cargo_toml);
+        tracing::debug!("running command `cargo {args:?}`");
+        let child = Command::new("cargo")
             .args(command_args.split_whitespace())
+            .current_dir(destination_folder)
             .stdout(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output()
+            .await?;
+        tracing::debug!("cargo command finished with status {}", child.status);
 
-        let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
-        let mut reader = BufReader::new(stdout).lines();
-
-        tokio::spawn(async move {
-            let status = child.wait().await.expect("child process encountered an error");
-            tracing::info!("cargo child command exit status: {status}");
-        });
-
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = String::from_utf8_lossy(&child.stderr);
         let mut diagnostics = HashMap::new();
         let current_dir = env::current_dir()?;
 
-        while let Some(line) = reader.next_line().await? {
-            match serde_json::from_str::<CargoLine>(&line) {
+        for line in stdout.lines() {
+            match serde_json::from_str::<CargoLine>(line) {
                 Ok(message) => {
                     if let Some(message) = message.message {
                         if message.message_type == "diagnostic" {
@@ -166,6 +178,61 @@ impl Cargo {
                 Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
             }
         }
+        let log_cargo = env::var("BACON_LS_LOG_CARGO").unwrap_or("off".to_string());
+        if log_cargo != "off" {
+            for line in stderr.lines() {
+                tracing::info!("[cargo stderr]{line}");
+            }
+        }
         Ok(diagnostics)
+    }
+
+    pub(crate) async fn find_git_root_directory() -> Option<PathBuf> {
+        let output = tokio::process::Command::new("git")
+            .arg("rev-parse")
+            .arg("--show-toplevel")
+            .output()
+            .await
+            .ok()?;
+
+        if output.status.success() {
+            String::from_utf8(output.stdout).ok().map(|v| PathBuf::from(v.trim()))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) async fn copy_source_code(destination_folder: &Path) -> Result<(), io::Error> {
+        let source_repo = Self::find_git_root_directory()
+            .await
+            .ok_or(io::Error::new(io::ErrorKind::Other, "oh no!"))?;
+        let output = Command::new("git")
+            .args(["ls-files"])
+            .current_dir(&source_repo)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(io::Error::new(io::ErrorKind::Other, "Failed to list tracked files"));
+        }
+
+        let files = String::from_utf8_lossy(&output.stdout);
+        tracing::debug!(
+            "copying all files from {} to {}",
+            source_repo.display(),
+            destination_folder.display()
+        );
+        for file in files.lines() {
+            let src_path = source_repo.join(file);
+            let dest_path = destination_folder.join(file);
+
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent).await?; // Ensure the directory exists
+            }
+
+            fs::copy(&src_path, &dest_path).await?;
+        }
+
+        Ok(())
     }
 }

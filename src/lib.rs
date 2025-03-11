@@ -11,6 +11,7 @@ use bacon::Bacon;
 use native::Cargo;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::{
     Client, LspService, Server,
@@ -49,6 +50,8 @@ struct State {
     locations_file: String,
     update_on_save: bool,
     update_on_save_wait_millis: Duration,
+    update_on_change: bool,
+    update_on_change_cooldown_millis: Duration,
     validate_bacon_preferences: bool,
     run_bacon_in_background: bool,
     run_bacon_in_background_command_args: String,
@@ -62,6 +65,8 @@ struct State {
     backend: Backend,
     diagnostics_version: i32,
     cargo_command_args: String,
+    build_folder: PathBuf,
+    last_change: Instant,
 }
 
 impl Default for State {
@@ -71,6 +76,8 @@ impl Default for State {
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,
             update_on_save_wait_millis: Duration::from_millis(1000),
+            update_on_change: false,
+            update_on_change_cooldown_millis: Duration::from_millis(5000),
             validate_bacon_preferences: true,
             run_bacon_in_background: true,
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
@@ -84,6 +91,8 @@ impl Default for State {
             backend: Backend::Cargo,
             diagnostics_version: 0,
             cargo_command_args: CARGO_COMMAND_ARGS.to_string(),
+            build_folder: tempfile::tempdir().unwrap().path().into(),
+            last_change: Instant::now(),
         }
     }
 }
@@ -123,9 +132,9 @@ impl BaconLs {
                 )
                 .with_thread_names(true)
                 .with_span_events(FmtSpan::CLOSE)
-                .with_line_number(true)
                 .with_target(true)
-                .compact()
+                .with_file(true)
+                .with_line_number(true)
                 .init();
         }
     }
@@ -165,6 +174,7 @@ impl BaconLs {
         let open_files = guard.open_files.clone();
         let backend = guard.backend;
         let command_args = guard.cargo_command_args.clone();
+        let build_folder = guard.build_folder.clone();
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
         drop(guard);
@@ -180,7 +190,9 @@ impl BaconLs {
             }
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
-                    let diagnostics = Cargo::cargo_diagnostics(&command_args).await.unwrap();
+                    let diagnostics = Cargo::cargo_diagnostics(&command_args, &build_folder)
+                        .await
+                        .unwrap_or_default();
                     if !diagnostics.contains_key(uri) {
                         tracing::info!("cleaned up cargo diagnostics for {uri}");
                         client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
