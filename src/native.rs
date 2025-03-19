@@ -123,6 +123,7 @@ impl Cargo {
 
     pub(crate) async fn cargo_diagnostics(
         command_args: &str,
+        cargo_env: &[String],
         destination_folder: &Path,
     ) -> Result<HashMap<Url, Vec<Diagnostic>>, Box<dyn Error>> {
         let mut args: Vec<&str> = command_args.split_whitespace().collect();
@@ -130,7 +131,14 @@ impl Cargo {
         let cargo_toml = destination_folder.join("Cargo.toml").display().to_string();
         args.push(&cargo_toml);
         tracing::debug!("running command `cargo {args:?}`");
-        let child = Command::new("cargo")
+        let mut cmd = Command::new("cargo");
+        for arg in cargo_env {
+            let Some((key, val)) = arg.split_once('=') else {
+                continue;
+            };
+            cmd.env(key, val);
+        }
+        let child = cmd
             .args(command_args.split_whitespace())
             .current_dir(destination_folder)
             .stdout(Stdio::piped())

@@ -117,6 +117,14 @@ impl LanguageServer for BaconLs {
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                         .to_string();
                 }
+                if let Some(value) = values.get("cargoEnv") {
+                    state.cargo_env = value
+                        .as_str()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                        .split(',')
+                        .map(|x| x.trim().to_owned())
+                        .collect::<Vec<_>>();
+                }
                 if let Some(value) = values.get("updateOnChange") {
                     state.update_on_change = value
                         .as_bool()
@@ -178,6 +186,7 @@ impl LanguageServer for BaconLs {
         let backend = state.backend;
         let update_on_change = state.update_on_change;
         let cargo_command_args = state.cargo_command_args.clone();
+        let cargo_env = state.cargo_env.clone();
         drop(state);
 
         if let Backend::Cargo = backend {
@@ -207,7 +216,7 @@ impl LanguageServer for BaconLs {
                             "building the first clean copy of this repo can take while",
                         )
                         .await;
-                    let _ = Cargo::cargo_diagnostics(&cargo_command_args, &temporary_folder).await;
+                    let _ = Cargo::cargo_diagnostics(&cargo_command_args, &cargo_env, &temporary_folder).await;
                 }
             }
             if validate_prefs {

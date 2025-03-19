@@ -65,6 +65,7 @@ struct State {
     backend: Backend,
     diagnostics_version: i32,
     cargo_command_args: String,
+    cargo_env: Vec<String>,
     build_folder: PathBuf,
     last_change: Instant,
 }
@@ -91,6 +92,7 @@ impl Default for State {
             backend: Backend::Bacon,
             diagnostics_version: 0,
             cargo_command_args: CARGO_COMMAND_ARGS.to_string(),
+            cargo_env: vec![],
             build_folder: tempfile::tempdir().unwrap().path().into(),
             last_change: Instant::now(),
         }
@@ -174,6 +176,7 @@ impl BaconLs {
         let open_files = guard.open_files.clone();
         let backend = guard.backend;
         let command_args = guard.cargo_command_args.clone();
+        let cargo_env = guard.cargo_env.clone();
         let build_folder = guard.build_folder.clone();
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
@@ -190,7 +193,7 @@ impl BaconLs {
             }
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
-                    let diagnostics = Cargo::cargo_diagnostics(&command_args, &build_folder)
+                    let diagnostics = Cargo::cargo_diagnostics(&command_args, &cargo_env, &build_folder)
                         .await
                         .unwrap_or_default();
                     if !diagnostics.contains_key(uri) {
