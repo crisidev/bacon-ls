@@ -11,3 +11,4 @@ vscode/extension.js.*
 bacon-ls.log
 result
 .coverage
+.direnv

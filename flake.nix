@@ -3,10 +3,6 @@
     flake-utils.url = "github:numtide/flake-utils";
     naersk.url = "github:nix-community/naersk";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    nixpkgs-mozilla = {
-      url = "github:mozilla/nixpkgs-mozilla";
-      flake = false;
-    };
   };
 
   outputs =
@@ -15,30 +11,15 @@
       flake-utils,
       naersk,
       nixpkgs,
-      nixpkgs-mozilla,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = (import nixpkgs) {
           inherit system;
-
-          overlays = [
-            (import nixpkgs-mozilla)
-          ];
         };
 
-        toolchain =
-          (pkgs.rustChannelOf {
-            rustToolchain = ./rust-toolchain.toml;
-            sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
-          }).rust;
-        naersk' = pkgs.callPackage naersk {
-          cargo = toolchain;
-          clippy = toolchain;
-          rustc = toolchain;
-        };
-        # The rust package
+        naersk' = pkgs.callPackage naersk { };
         bacon-ls = naersk'.buildPackage {
           src = ./.;
         };
@@ -56,7 +37,6 @@
             grcov
             llvmPackages_19.libllvm
             rust-analyzer
-            toolchain
           ];
         };
 
