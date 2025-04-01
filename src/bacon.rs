@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs};
 
 use notify_debouncer_full::{DebounceEventResult, new_debouncer};
@@ -14,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder};
+use tracing::info;
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
@@ -447,9 +449,15 @@ impl Bacon {
         })
         .expect("failed to create file watcher");
 
-        watcher
-            .watch(PathBuf::from(&locations_file), notify::RecursiveMode::Recursive)
-            .expect("couldn't watch diagnostics file");
+        loop {
+            match watcher.watch(PathBuf::from(&locations_file), notify::RecursiveMode::Recursive) {
+                Ok(_) => break,
+                Err(e) => {
+                    info!("Watcher failed to start");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
 
         while let Some(Ok(res)) = tokio::select! {
             ev = rx.recv_async() => {
