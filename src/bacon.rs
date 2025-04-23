@@ -15,7 +15,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder};
-use tracing::info;
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
