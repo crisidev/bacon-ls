@@ -339,7 +339,7 @@ impl Bacon {
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
-                let mut folder_path = PathBuf::from(folder.uri.path());
+                let mut folder_path = folder.uri.to_file_path().unwrap();
                 if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
                     tracing::debug!(
                         "found git root directory {}, using it for files base path",
