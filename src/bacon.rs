@@ -637,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_in_background() {
         let cancel_token = CancellationToken::new();
-        let handle = Bacon::run_in_background("echo", "I am running", None, cancel_token.clone()).await;
+        let handle = Bacon::run_in_background("cargo", "--version", None, cancel_token.clone()).await;
         assert!(handle.is_ok());
         cancel_token.cancel();
         handle.unwrap().await.unwrap();
