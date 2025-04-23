@@ -746,10 +746,6 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         assert_eq!(diagnostics[3].1.message.len(), 766);
     }
 
-    // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
-    // because of how the Url is handled in Windows compared to *NIX, but until I don't have a
-    // proper test bed Windows support is probably broken.
-    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_bacon_diagnostics_production_and_deduplication() {
         let tmp_dir = TempDir::new().unwrap();
