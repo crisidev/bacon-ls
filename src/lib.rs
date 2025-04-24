@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::{
     Client, LspService, Server,
-    lsp_types::{Url, WorkspaceFolder},
+    lsp_types::{Uri, WorkspaceFolder},
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -59,7 +59,7 @@ struct State {
     bacon_command_handle: Option<JoinHandle<()>>,
     syncronize_all_open_files_wait_millis: Duration,
     diagnostics_data_supported: bool,
-    open_files: HashSet<Url>,
+    open_files: HashSet<Uri>,
     cancel_token: CancellationToken,
     sync_files_handle: Option<JoinHandle<()>>,
     backend: Backend,
@@ -169,7 +169,7 @@ impl BaconLs {
         }
     }
 
-    async fn publish_diagnostics(&self, uri: &Url) {
+    async fn publish_diagnostics(&self, uri: &Uri) {
         let mut guard = self.state.write().await;
         let locations_file_name = guard.locations_file.clone();
         let workspace_folders = guard.workspace_folders.clone();
@@ -197,15 +197,15 @@ impl BaconLs {
                         .await
                         .unwrap_or_default();
                     if !diagnostics.contains_key(uri) {
-                        tracing::info!("cleaned up cargo diagnostics for {uri}");
+                        tracing::info!("cleaned up cargo diagnostics for {uri:?}");
                         client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
                     }
                     for (uri, diagnostics) in diagnostics.into_iter() {
                         if diagnostics.is_empty() {
-                            tracing::info!("cleaned up cargo diagnostics for {uri}");
+                            tracing::info!("cleaned up cargo diagnostics for {uri:?}");
                             client.publish_diagnostics(uri, vec![], Some(version)).await;
                         } else if open_files.contains(&uri) {
-                            tracing::info!("sent {} cargo diagnostics for {uri}", diagnostics.len());
+                            tracing::info!("sent {} cargo diagnostics for {uri:?}", diagnostics.len());
                             client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                         }
                     }

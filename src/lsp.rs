@@ -2,18 +2,19 @@ use std::{collections::HashMap, env, time::Duration};
 
 use tokio::{fs, time::Instant};
 use tower_lsp::{
-    LanguageServer, jsonrpc,
+    jsonrpc,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
         CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams,
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
         InitializeResult, InitializedParams, MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
         RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+        TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
+    LanguageServer,
 };
 
-use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
+use crate::{bacon::Bacon, Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
@@ -305,7 +306,7 @@ impl LanguageServer for BaconLs {
         let update_on_change = state.update_on_change;
         drop(state);
         tracing::debug!(
-            "client sent didSave request, updateOnSave is {update_on_save} for {} after {update_on_save_wait_millis:?}",
+            "client sent didSave request, updateOnSave is {update_on_save} for {:?} after {update_on_save_wait_millis:?}",
             params.text_document.uri
         );
         if update_on_save {
@@ -338,7 +339,7 @@ impl LanguageServer for BaconLs {
                 return;
             }
             if let Some(source_folder) = Cargo::find_git_root_directory().await {
-                let file = params.text_document.uri.path().replacen(
+                let file = params.text_document.uri.path().as_str().replacen(
                     &source_folder.display().to_string(),
                     &temporary_folder.display().to_string(),
                     1,
@@ -372,7 +373,7 @@ impl LanguageServer for BaconLs {
     async fn did_delete_files(&self, params: DeleteFilesParams) {
         for file in params.files {
             tracing::debug!("client sent didDeleteFiles request for {}", file.uri);
-            if let Ok(uri) = Url::parse(&file.uri) {
+            if let Ok(uri) = str::parse::<Uri>(&file.uri) {
                 let mut state = self.state.write().await;
                 state.open_files.remove(&uri);
                 drop(state);
@@ -387,7 +388,7 @@ impl LanguageServer for BaconLs {
                 file.old_uri,
                 file.new_uri
             );
-            if let (Ok(old_uri), Ok(new_uri)) = (Url::parse(&file.old_uri), Url::parse(&file.new_uri)) {
+            if let (Ok(old_uri), Ok(new_uri)) = (str::parse::<Uri>(&file.old_uri), str::parse::<Uri>(&file.new_uri)) {
                 let mut state = self.state.write().await;
                 let temporary_folder = state.build_folder.clone();
                 let backend = state.backend;
