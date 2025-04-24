@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Deserializer};
 use tokio::{fs, process::Command};
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
 
 use crate::{DiagnosticData, PKG_NAME};
 
@@ -30,7 +30,7 @@ enum CargoLevel {
 #[derive(Debug, Deserialize)]
 struct CargoSpan {
     #[serde(deserialize_with = "deserialize_url")]
-    file_name: Url,
+    file_name: Uri,
     line_start: u32,
     line_end: u32,
     column_start: u32,
@@ -38,12 +38,12 @@ struct CargoSpan {
     suggested_replacement: Option<String>,
 }
 
-fn deserialize_url<'de, D>(deserializer: D) -> Result<Url, D::Error>
+fn deserialize_url<'de, D>(deserializer: D) -> Result<Uri, D::Error>
 where
     D: Deserializer<'de>,
 {
     let url_str: &str = Deserialize::deserialize(deserializer)?;
-    Url::parse(&format!("file://{url_str}")).map_err(serde::de::Error::custom)
+    str::parse::<Uri>(&format!("file://{url_str}")).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,9 +86,9 @@ impl Cargo {
         severity: &str,
         message: &str,
         span: &CargoSpan,
-        diagnostics: &mut HashMap<Url, Vec<Diagnostic>>,
+        diagnostics: &mut HashMap<Uri, Vec<Diagnostic>>,
     ) -> Result<(), Box<dyn Error>> {
-        if let Some(host) = span.file_name.host().as_ref() {
+        if let Some(host) = span.file_name.authority().map(|auth| auth.host()) {
             let data = span.suggested_replacement.as_ref().map(|replacement| {
                 serde_json::json!(DiagnosticData {
                     corrections: vec![replacement.into()]
@@ -96,8 +96,8 @@ impl Cargo {
             });
             let file_name = current_dir
                 .join(host.to_string())
-                .join(span.file_name.path().replacen("/", "", 1));
-            let url = Url::parse(&format!("file://{}", file_name.display()))?;
+                .join(span.file_name.path().as_str().replacen("/", "", 1));
+            let url = str::parse::<Uri>(&format!("file://{}", file_name.display()))?;
             let diagnostics: &mut Vec<Diagnostic> = diagnostics.entry(url).or_default();
             let diagnostic = Diagnostic {
                 range: Range::new(
@@ -125,7 +125,7 @@ impl Cargo {
         command_args: &str,
         cargo_env: &[String],
         destination_folder: &Path,
-    ) -> Result<HashMap<Url, Vec<Diagnostic>>, Box<dyn Error>> {
+    ) -> Result<HashMap<Uri, Vec<Diagnostic>>, Box<dyn Error>> {
         let mut args: Vec<&str> = command_args.split_whitespace().collect();
         args.push("--manifest-path");
         let cargo_toml = destination_folder.join("Cargo.toml").display().to_string();

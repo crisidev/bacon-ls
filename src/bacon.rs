@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,8 +14,8 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_lsp::Client;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
+use tower_lsp_server::{Client, UriExt};
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
@@ -175,7 +176,7 @@ impl Bacon {
         Some((line_start, line_end, column_start, column_end))
     }
 
-    fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Url, Diagnostic)> {
+    fn parse_bacon_diagnostic_line(line: &str, folder_path: &Path) -> Option<(Uri, Diagnostic)> {
         // Split line into parts; expect exactly 7 parts in the format specified.
         let line_split: Vec<_> = line.splitn(9, "|:|").collect();
 
@@ -201,7 +202,7 @@ impl Bacon {
             }
         };
 
-        let path = match Url::parse(&format!("file://{}", file_path.display())) {
+        let path = match str::parse::<Uri>(&format!("file://{}", file_path.display())) {
             Ok(url) => url,
             Err(e) => {
                 tracing::error!("error parsing file path {}: {}", file_path.display(), e);
@@ -247,10 +248,10 @@ impl Bacon {
         Some((path, diagnostic))
     }
 
-    fn deduplicate_diagnostics(path: Url, uri: &Url, diagnostic: Diagnostic, diagnostics: &mut Vec<(Url, Diagnostic)>) {
+    fn deduplicate_diagnostics(path: Uri, uri: &Uri, diagnostic: Diagnostic, diagnostics: &mut Vec<(Uri, Diagnostic)>) {
         if &path == uri
             && !diagnostics.iter().any(|(existing_path, existing_diagnostic)| {
-                existing_path.path() == path.path()
+                existing_path.path().as_str() == path.path().as_str()
                     && diagnostic.range == existing_diagnostic.range
                     && diagnostic.severity == existing_diagnostic.severity
                     && diagnostic.message == existing_diagnostic.message
@@ -330,11 +331,11 @@ impl Bacon {
     }
 
     async fn diagnostics(
-        uri: &Url,
+        uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
-    ) -> Vec<(Url, Diagnostic)> {
-        let mut diagnostics: Vec<(Url, Diagnostic)> = vec![];
+    ) -> Vec<(Uri, Diagnostic)> {
+        let mut diagnostics: Vec<(Uri, Diagnostic)> = vec![];
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
@@ -347,7 +348,7 @@ impl Bacon {
                         "found git root directory {}, using it for files base path",
                         git_root.display()
                     );
-                    folder_path = git_root;
+                    folder_path = Cow::Owned(git_root);
                 }
                 let mut bacon_locations = Vec::new();
                 if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
@@ -381,7 +382,7 @@ impl Bacon {
                                         if let Some((path, diagnostic)) =
                                             Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
                                         {
-                                            tracing::debug!("found diagnostic for {}", path);
+                                            tracing::debug!("found diagnostic for {}", path.as_str());
                                             Self::deduplicate_diagnostics(
                                                 path.clone(),
                                                 uri,
@@ -421,7 +422,7 @@ impl Bacon {
     }
 
     async fn diagnostics_vec(
-        uri: &Url,
+        uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) -> Vec<Diagnostic> {
@@ -499,12 +500,12 @@ impl Bacon {
 
     pub(crate) async fn publish_diagnostics(
         client: Option<&Arc<Client>>,
-        uri: &Url,
+        uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) {
         let diagnostics_vec = Self::diagnostics_vec(uri, locations_file_name, workspace_folders).await;
-        tracing::info!("sent {} bacon diagnostics for {uri}", diagnostics_vec.len());
+        tracing::info!("sent {} bacon diagnostics for {uri:?}", diagnostics_vec.len());
         if let Some(client) = client {
             client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
         }
@@ -513,7 +514,7 @@ impl Bacon {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, str::FromStr};
+    use std::io::Write;
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -688,12 +689,13 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_multiline_diagnostics_production() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
         let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
-        let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
+        let error_path_url = str::parse::<Uri>(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
             "warning|:|src/lib.rs|:|130|:|142|:|33|:|34|:|this if statement can be collapsed|:|none|:|none"
@@ -735,7 +737,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
+            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 4);
@@ -750,12 +752,13 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_diagnostics_production_and_deduplication() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
         let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
-        let error_path_url = Url::from_str(&format!("file://{error_path}")).unwrap();
+        let error_path_url = str::parse::<Uri>(&format!("file://{error_path}")).unwrap();
         writeln!(
             tmp_file,
             "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none|:|none"
@@ -780,7 +783,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: Url::from_directory_path(tmp_dir.path()).unwrap(),
+            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 3);

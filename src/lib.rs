@@ -9,13 +9,15 @@ use std::time::Duration;
 use argh::FromArgs;
 use bacon::Bacon;
 use native::Cargo;
+use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tower_lsp::{
+use tower_lsp_server::lsp_types::ProgressToken;
+use tower_lsp_server::{
     Client, LspService, Server,
-    lsp_types::{Url, WorkspaceFolder},
+    lsp_types::{Uri, WorkspaceFolder},
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -59,7 +61,7 @@ struct State {
     bacon_command_handle: Option<JoinHandle<()>>,
     syncronize_all_open_files_wait_millis: Duration,
     diagnostics_data_supported: bool,
-    open_files: HashSet<Url>,
+    open_files: HashSet<Uri>,
     cancel_token: CancellationToken,
     sync_files_handle: Option<JoinHandle<()>>,
     backend: Backend,
@@ -169,7 +171,7 @@ impl BaconLs {
         }
     }
 
-    async fn publish_diagnostics(&self, uri: &Url) {
+    async fn publish_diagnostics(&self, uri: &Uri) {
         let mut guard = self.state.write().await;
         let locations_file_name = guard.locations_file.clone();
         let workspace_folders = guard.workspace_folders.clone();
@@ -193,22 +195,33 @@ impl BaconLs {
             }
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
+                    let token = ProgressToken::Number(rand::rng().random::<i32>());
+                    let first_arg = command_args.split_whitespace().next().unwrap_or("check");
+                    let progress = client
+                        .progress(token, "running:")
+                        .with_message(format!("cargo {first_arg}"))
+                        .with_percentage(0)
+                        .begin()
+                        .await;
                     let diagnostics = Cargo::cargo_diagnostics(&command_args, &cargo_env, &build_folder)
                         .await
                         .unwrap_or_default();
                     if !diagnostics.contains_key(uri) {
-                        tracing::info!("cleaned up cargo diagnostics for {uri}");
+                        tracing::info!("cleaned up cargo diagnostics for {uri:?}");
                         client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
                     }
                     for (uri, diagnostics) in diagnostics.into_iter() {
                         if diagnostics.is_empty() {
-                            tracing::info!("cleaned up cargo diagnostics for {uri}");
+                            tracing::info!("cleaned up cargo diagnostics for {uri:?}");
                             client.publish_diagnostics(uri, vec![], Some(version)).await;
                         } else if open_files.contains(&uri) {
-                            tracing::info!("sent {} cargo diagnostics for {uri}", diagnostics.len());
+                            tracing::info!("sent {} cargo diagnostics for {uri:?}", diagnostics.len());
                             client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                         }
                     }
+
+                    progress.report(100).await;
+                    progress.finish().await;
                 }
             }
         }
