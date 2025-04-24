@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env, time::Duration};
 
 use tokio::{fs, time::Instant};
-use tower_lsp::{
+use tower_lsp_server::{
     LanguageServer, jsonrpc,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
@@ -15,7 +15,6 @@ use tower_lsp::{
 
 use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
 
-#[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         tracing::info!("initializing {PKG_NAME} v{PKG_VERSION}",);

@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tower_lsp::lsp_types::ProgressToken;
-use tower_lsp::{
+use tower_lsp_server::lsp_types::ProgressToken;
+use tower_lsp_server::{
     Client, LspService, Server,
     lsp_types::{Uri, WorkspaceFolder},
 };

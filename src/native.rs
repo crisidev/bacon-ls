@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Deserializer};
 use tokio::{fs, process::Command};
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
 
 use crate::{DiagnosticData, PKG_NAME};
 

@@ -13,8 +13,8 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_lsp::Client;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
+use tower_lsp_server::Client;
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 

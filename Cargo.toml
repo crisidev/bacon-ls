@@ -39,7 +39,7 @@ tokio = { version = "1.44.1", features = [
 ] }
 tokio-util = "0.7.14"
 toml = "0.8"
-tower-lsp = { git = "https://github.com/Leandros/tower-lsp.git", rev = "1d8b5d74424183b0b6cdfaf7ad5cc6ca5b113cc3" }
+tower-lsp-server = "0.21.1"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
     "env-filter",
