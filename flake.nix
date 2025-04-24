@@ -35,6 +35,7 @@
             cargo-audit
             cargo-nextest
             grcov
+            openssl
             llvmPackages_19.libllvm
             rust-analyzer
           ];
