@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fs};
 
-use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,10 +13,10 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 use tower_lsp::Client;
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 
-use crate::{BaconLs, DiagnosticData, State, LOCATIONS_FILE, PKG_NAME};
+use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -599,9 +599,11 @@ mod tests {
             path = "{LOCATIONS_FILE}"
         "#
         );
-        assert!(Bacon::validate_preferences_impl(valid_toml.as_bytes(), false)
-            .await
-            .is_ok());
+        assert!(
+            Bacon::validate_preferences_impl(valid_toml.as_bytes(), false)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -730,7 +732,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: str::parse::<Uri>(format!("file://{}", tmp_dir.path().display())).unwrap(),
+            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 4);
@@ -775,7 +777,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: str::parse::<Uri>(format!("file://{}", tmp_dir.path().display())).unwrap(),
+            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 3);

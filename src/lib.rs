@@ -9,10 +9,12 @@ use std::time::Duration;
 use argh::FromArgs;
 use bacon::Bacon;
 use native::Cargo;
+use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tower_lsp::lsp_types::ProgressToken;
 use tower_lsp::{
     Client, LspService, Server,
     lsp_types::{Uri, WorkspaceFolder},
@@ -193,6 +195,14 @@ impl BaconLs {
             }
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
+                    let token = ProgressToken::Number(rand::rng().random::<i32>());
+                    let first_arg = command_args.split_whitespace().next().unwrap_or("check");
+                    let progress = client
+                        .progress(token, "running:")
+                        .with_message(format!("cargo {first_arg}"))
+                        .with_percentage(0)
+                        .begin()
+                        .await;
                     let diagnostics = Cargo::cargo_diagnostics(&command_args, &cargo_env, &build_folder)
                         .await
                         .unwrap_or_default();
@@ -209,6 +219,9 @@ impl BaconLs {
                             client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                         }
                     }
+
+                    progress.report(100).await;
+                    progress.finish().await;
                 }
             }
         }

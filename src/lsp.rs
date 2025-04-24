@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, time::Duration};
 
 use tokio::{fs, time::Instant};
 use tower_lsp::{
-    jsonrpc,
+    LanguageServer, jsonrpc,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
         CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams,
@@ -11,10 +11,9 @@ use tower_lsp::{
         RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
         TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
-    LanguageServer,
 };
 
-use crate::{bacon::Bacon, Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for BaconLs {
