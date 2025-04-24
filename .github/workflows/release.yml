@@ -68,6 +68,9 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install zlib-dev on musl (linux)
+        if: endsWith(matrix.target, 'unknown-linux-musl')
+        run: sudo apt-get update && sudo apt-get install zlib1g-dev
       - name: Install GCC arm64 (linux)
         if: startsWith(matrix.target, 'aarch64-unknown-linux')
         run: sudo apt-get update && sudo apt-get install gcc-aarch64-linux-gnu
