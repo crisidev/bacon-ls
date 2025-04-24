@@ -15,7 +15,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, WorkspaceFolder};
-use tracing::info;
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
@@ -339,7 +338,10 @@ impl Bacon {
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
-                let mut folder_path = PathBuf::from(folder.uri.path());
+                let mut folder_path = folder
+                    .uri
+                    .to_file_path()
+                    .expect("the workspace folder sent by the editor is not a file path");
                 if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
                     tracing::debug!(
                         "found git root directory {}, using it for files base path",
@@ -637,7 +639,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_in_background() {
         let cancel_token = CancellationToken::new();
-        let handle = Bacon::run_in_background("echo", "I am running", None, cancel_token.clone()).await;
+        let handle = Bacon::run_in_background("cargo", "--version", None, cancel_token.clone()).await;
         assert!(handle.is_ok());
         cancel_token.cancel();
         handle.unwrap().await.unwrap();
@@ -747,10 +749,6 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         assert_eq!(diagnostics[3].1.message.len(), 766);
     }
 
-    // TODO: I need a windows machine to understand why this test fails. I am pretty sure it's
-    // because of how the Url is handled in Windows compared to *NIX, but until I don't have a
-    // proper test bed Windows support is probably broken.
-    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_bacon_diagnostics_production_and_deduplication() {
         let tmp_dir = TempDir::new().unwrap();
