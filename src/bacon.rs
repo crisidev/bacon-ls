@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,8 +14,8 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_lsp_server::Client;
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
+use tower_lsp_server::{Client, UriExt};
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
@@ -338,13 +339,16 @@ impl Bacon {
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
-                let mut folder_path = PathBuf::from(folder.uri.path().as_str());
+                let mut folder_path = folder
+                    .uri
+                    .to_file_path()
+                    .expect("the workspace folder sent by the editor is not a file path");
                 if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
                     tracing::debug!(
                         "found git root directory {}, using it for files base path",
                         git_root.display()
                     );
-                    folder_path = git_root;
+                    folder_path = Cow::Owned(git_root);
                 }
                 let mut bacon_locations = Vec::new();
                 if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
