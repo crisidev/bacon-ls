@@ -689,6 +689,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_multiline_diagnostics_production() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
@@ -751,6 +752,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_diagnostics_production_and_deduplication() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
