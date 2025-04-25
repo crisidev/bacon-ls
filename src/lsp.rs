@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, time::Duration};
+use std::{collections::HashMap, env, path::PathBuf, time::Duration};
 
 use tokio::{fs, time::Instant};
 use tower_lsp_server::{
@@ -145,8 +145,30 @@ impl LanguageServer for BaconLs {
             state.update_on_save = true;
             state.update_on_save_wait_millis = Duration::ZERO;
             if !state.update_on_change {
-                if let Some(build_folder) = Cargo::find_git_root_directory().await {
-                    state.build_folder = build_folder;
+                if let Some(git_root) = Cargo::find_git_root_directory().await {
+                    // We only chose the git root as our workspace root if a
+                    // `Cargo.toml` actually exists in the git root.
+                    if git_root.join("Cargo.toml").exists() {
+                        state.build_folder = git_root;
+                    } else {
+                        #[allow(deprecated)]
+                        if let Some(root_path) = params.root_path {
+                            state.build_folder = PathBuf::from(root_path);
+                        } else if let Some(root_uri) = params.root_uri {
+                            state.build_folder = PathBuf::from(root_uri.path().as_str());
+                        } else if let Some(workspace_folders) = &state.workspace_folders {
+                            if let Some(first) = workspace_folders.get(0) {
+                                state.build_folder = PathBuf::from(first.uri.path().as_str());
+                            } else {
+                                // This duplication can be avoided when let chains are finally
+                                // stabilized.
+                                state.build_folder = git_root;
+                            }
+                        } else {
+                            // We know this is broken, but it's our best guess.
+                            state.build_folder = git_root;
+                        }
+                    }
                 }
             }
         }
