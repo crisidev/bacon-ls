@@ -70,7 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install zlib-dev and openssl-dev (linux)
         if: contains(matrix.target, 'unknown-linux')
-        run: sudo apt-get update && sudo apt-get install zlib1g-dev libssl-dev
+        run: sudo apt-get update && sudo apt-get install zlib1g-dev libssl-dev musl-tools
       - name: Install GCC arm64 (linux)
         if: startsWith(matrix.target, 'aarch64-unknown-linux')
         run: sudo apt-get update && sudo apt-get install gcc-aarch64-linux-gnu
@@ -80,7 +80,9 @@ jobs:
       - name: Install i686 glibc (linux)
         if: matrix.target == 'i686-unknown-linux-musl'
         run: sudo apt-get install gcc-multilib g++-multilib libc6-dev-i386
-      - run: PKG_CONFIG_ALLOW_CROSS=1 cargo build --target ${{ matrix.target }} --release
+      - run: cargo build --target ${{ matrix.target }} --release
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1 
       - run: npm ci
       - name: vsce package
         # we can only publish a single linux-x64 and linux-arm64 package
