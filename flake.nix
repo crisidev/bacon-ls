@@ -21,11 +21,12 @@
 
         naersk' = pkgs.callPackage naersk { };
         bacon-ls = naersk'.buildPackage {
+          buildInputs = with pkgs; [ perl openssl ];
+          nativeBuildInputs = with pkgs; [ perl openssl ];
           src = ./.;
         };
 
-      in
-      rec {
+      in {
         # For `nix build` & `nix run`:
         defaultPackage = bacon-ls;
 
@@ -41,7 +42,7 @@
         };
 
         # Overlay for package usage in other Nix configurations
-        overlay = final: prev: {
+        overlay = _: _: {
           inherit bacon-ls;
         };
       }
