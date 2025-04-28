@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, path::PathBuf, time::Duration};
+use std::{collections::HashMap, env, time::Duration};
 
 use tokio::{fs, time::Instant};
 use tower_lsp_server::{
@@ -19,6 +19,8 @@ impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         tracing::info!("initializing {PKG_NAME} v{PKG_VERSION}",);
         tracing::debug!("initializing with input parameters: {params:#?}");
+        let project_root = Cargo::find_project_root(&params).await;
+        tracing::debug!("Found project root: {project_root:?}");
 
         if let Some(TextDocumentClientCapabilities {
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities { .. }),
@@ -48,6 +50,7 @@ impl LanguageServer for BaconLs {
         }
 
         let mut state = self.state.write().await;
+        state.project_root = project_root;
         state.workspace_folders = params.workspace_folders;
         state.diagnostics_data_supported = diagnostics_data_supported;
 
@@ -145,30 +148,8 @@ impl LanguageServer for BaconLs {
             state.update_on_save = true;
             state.update_on_save_wait_millis = Duration::ZERO;
             if !state.update_on_change {
-                if let Some(git_root) = Cargo::find_git_root_directory().await {
-                    // We only chose the git root as our workspace root if a
-                    // `Cargo.toml` actually exists in the git root.
-                    if git_root.join("Cargo.toml").exists() {
-                        state.build_folder = git_root;
-                    } else {
-                        #[allow(deprecated)]
-                        if let Some(root_path) = params.root_path {
-                            state.build_folder = PathBuf::from(root_path);
-                        } else if let Some(root_uri) = params.root_uri {
-                            state.build_folder = PathBuf::from(root_uri.path().as_str());
-                        } else if let Some(workspace_folders) = &state.workspace_folders {
-                            if let Some(first) = workspace_folders.get(0) {
-                                state.build_folder = PathBuf::from(first.uri.path().as_str());
-                            } else {
-                                // This duplication can be avoided when let chains are finally
-                                // stabilized.
-                                state.build_folder = git_root;
-                            }
-                        } else {
-                            // We know this is broken, but it's our best guess.
-                            state.build_folder = git_root;
-                        }
-                    }
+                if let Some(root) = &state.project_root {
+                    state.build_folder = root.clone();
                 }
             }
         }
@@ -198,6 +179,7 @@ impl LanguageServer for BaconLs {
 
     async fn initialized(&self, _: InitializedParams) {
         let state = self.state.read().await;
+        let proj_root = state.project_root.clone();
         let run_bacon = state.run_bacon_in_background;
         let bacon_command_args = state.run_bacon_in_background_command_args.clone();
         let create_bacon_prefs = state.create_bacon_preferences_file;
@@ -253,7 +235,15 @@ impl LanguageServer for BaconLs {
                 let mut current_dir = None;
                 if let Ok(cwd) = env::current_dir() {
                     current_dir = Self::find_git_root_directory(&cwd).await;
+                    if let Some(dir) = &current_dir {
+                        if !dir.join("Cargo.toml").exists() {
+                            current_dir = proj_root;
+                        }
+                    } else {
+                        current_dir = proj_root;
+                    }
                 }
+
                 match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref(), cancel_token).await {
                     Ok(command) => {
                         tracing::info!("bacon was started successfully and is running in the background");

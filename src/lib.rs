@@ -48,6 +48,7 @@ enum Backend {
 
 #[derive(Debug)]
 struct State {
+    project_root: Option<PathBuf>,
     workspace_folders: Option<Vec<WorkspaceFolder>>,
     locations_file: String,
     update_on_save: bool,
@@ -75,6 +76,7 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            project_root: None,
             workspace_folders: None,
             locations_file: LOCATIONS_FILE.to_string(),
             update_on_save: true,

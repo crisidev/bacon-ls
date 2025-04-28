@@ -344,11 +344,13 @@ impl Bacon {
                     .to_file_path()
                     .expect("the workspace folder sent by the editor is not a file path");
                 if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
-                    tracing::debug!(
-                        "found git root directory {}, using it for files base path",
-                        git_root.display()
-                    );
-                    folder_path = Cow::Owned(git_root);
+                    if git_root.join("Cargo.toml").exists() {
+                        tracing::debug!(
+                            "found git root directory {}, using it for files base path",
+                            git_root.display()
+                        );
+                        folder_path = Cow::Owned(git_root);
+                    }
                 }
                 let mut bacon_locations = Vec::new();
                 if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
@@ -437,10 +439,11 @@ impl Bacon {
         tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
-        let (locations_file, wait_time, cancel_token) = {
+        let (locations_file, proj_root, wait_time, cancel_token) = {
             let state = state.read().await;
             (
                 state.locations_file.clone(),
+                state.project_root.clone(),
                 state.syncronize_all_open_files_wait_millis,
                 state.cancel_token.clone(),
             )
@@ -452,12 +455,20 @@ impl Bacon {
         })
         .expect("failed to create file watcher");
 
+        let locations_file_path =
+            proj_root.map_or_else(|| PathBuf::from(&locations_file), |root| root.join(&locations_file));
         loop {
-            match watcher.watch(PathBuf::from(&locations_file), notify::RecursiveMode::Recursive) {
-                Ok(_) => break,
+            match watcher.watch(PathBuf::from(&locations_file_path), notify::RecursiveMode::Recursive) {
+                Ok(_) => {
+                    tracing::info!("watching '{}' for changes...", locations_file_path.display());
+                    break;
+                }
                 Err(e) => {
-                    tracing::info!("unable to start .bacon_locations file watcher, retrying in 1 second");
-                    tracing::debug!(".bacon_locations watcher: {e}");
+                    tracing::warn!(
+                        "unable to watch '{}', retrying in 1 second",
+                        locations_file_path.display()
+                    );
+                    tracing::error!(".bacon_locations watcher error: {e}");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -485,7 +496,6 @@ impl Bacon {
 
             let loop_state = state.read().await;
             let open_files = loop_state.open_files.clone();
-            let locations_file = loop_state.locations_file.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
             drop(loop_state);
             tracing::debug!(
