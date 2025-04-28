@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Deserializer};
 use tokio::{fs, process::Command};
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 
 use crate::{DiagnosticData, PKG_NAME};
 
@@ -208,6 +208,48 @@ impl Cargo {
         } else {
             None
         }
+    }
+
+    pub(crate) async fn find_project_root(params: &InitializeParams) -> Option<PathBuf> {
+        let git_root = Self::find_git_root_directory().await?;
+
+        // We only chose the git root as our workspace root if a
+        // `Cargo.toml` actually exists in the git root.
+        if git_root.join("Cargo.toml").exists() {
+            return Some(git_root);
+        }
+
+        if let Some(workspace_folders) = &params.workspace_folders {
+            for folder in workspace_folders {
+                let root_path = PathBuf::from(folder.uri.path().as_str());
+                if root_path.join("Cargo.toml").exists() {
+                    return Some(root_path);
+                }
+            }
+        }
+
+        #[allow(deprecated)]
+        if let Some(root_uri) = &params.root_uri {
+            let root_path = PathBuf::from(root_uri.path().as_str());
+            if root_path.join("Cargo.toml").exists() {
+                return Some(root_path);
+            }
+        }
+
+        #[allow(deprecated)]
+        if let Some(root_path) = &params.root_path {
+            let root_path = PathBuf::from(root_path);
+            if root_path.join("Cargo.toml").exists() {
+                return Some(root_path);
+            }
+        }
+
+        let cwd = std::env::current_dir().ok()?;
+        if cwd.join("Cargo.toml").exists() {
+            return Some(cwd);
+        }
+
+        None
     }
 
     pub(crate) async fn copy_source_code(destination_folder: &Path) -> Result<(), io::Error> {
