@@ -261,8 +261,8 @@ impl Bacon {
         }
     }
 
-    pub(crate) async fn validate_preferences(create_prefs_file: bool) -> Result<(), String> {
-        let bacon_prefs = Command::new("bacon")
+    pub(crate) async fn validate_preferences(bacon_command: &str, create_prefs_file: bool) -> Result<(), String> {
+        let bacon_prefs = Command::new(bacon_command)
             .arg("--prefs")
             .output()
             .await
