@@ -28,6 +28,7 @@ mod native;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";
+const BACON_BACKGROUND_COMMAND: &str = "bacon";
 const BACON_BACKGROUND_COMMAND_ARGS: &str = "--headless -j bacon-ls";
 const CARGO_COMMAND_ARGS: &str =
     "clippy --tests --all-features --all-targets --message-format json-diagnostic-rendered-ansi";
@@ -57,6 +58,7 @@ struct State {
     update_on_change_cooldown_millis: Duration,
     validate_bacon_preferences: bool,
     run_bacon_in_background: bool,
+    run_bacon_in_background_command: String,
     run_bacon_in_background_command_args: String,
     create_bacon_preferences_file: bool,
     bacon_command_handle: Option<JoinHandle<()>>,
@@ -85,6 +87,7 @@ impl Default for State {
             update_on_change_cooldown_millis: Duration::from_millis(5000),
             validate_bacon_preferences: true,
             run_bacon_in_background: true,
+            run_bacon_in_background_command: BACON_BACKGROUND_COMMAND.to_string(),
             run_bacon_in_background_command_args: BACON_BACKGROUND_COMMAND_ARGS.to_string(),
             create_bacon_preferences_file: true,
             bacon_command_handle: None,

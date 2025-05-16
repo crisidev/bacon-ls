@@ -130,6 +130,7 @@ supports the following values:
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
 - `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
+- `runBaconInBackgroundCommand`: Path to the command used to run `bacon` in the background (defaults to find in `$PATH`).
 - `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
 - `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
 

@@ -70,6 +70,12 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
+                if let Some(value) = values.get("runBaconInBackgroundCommand") {
+                    state.run_bacon_in_background_command = value
+                        .as_str()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                        .to_string();
+                }
                 if let Some(value) = values.get("runBaconInBackgroundCommandArguments") {
                     state.run_bacon_in_background_command_args = value
                         .as_str()
@@ -181,6 +187,7 @@ impl LanguageServer for BaconLs {
         let state = self.state.read().await;
         let proj_root = state.project_root.clone();
         let run_bacon = state.run_bacon_in_background;
+        let bacon_command = state.run_bacon_in_background_command.clone();
         let bacon_command_args = state.run_bacon_in_background_command_args.clone();
         let create_bacon_prefs = state.create_bacon_preferences_file;
         let validate_prefs = state.validate_bacon_preferences;
@@ -223,7 +230,7 @@ impl LanguageServer for BaconLs {
                 }
             }
             if validate_prefs {
-                if let Err(e) = Bacon::validate_preferences(create_bacon_prefs).await {
+                if let Err(e) = Bacon::validate_preferences(&bacon_command, create_bacon_prefs).await {
                     tracing::error!("{e}");
                     client.show_message(MessageType::ERROR, e).await;
                 }
@@ -244,7 +251,9 @@ impl LanguageServer for BaconLs {
                     }
                 }
 
-                match Bacon::run_in_background("bacon", &bacon_command_args, current_dir.as_ref(), cancel_token).await {
+                match Bacon::run_in_background(&bacon_command, &bacon_command_args, current_dir.as_ref(), cancel_token)
+                    .await
+                {
                     Ok(command) => {
                         tracing::info!("bacon was started successfully and is running in the background");
                         let mut state = self.state.write().await;
