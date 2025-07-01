@@ -40,7 +40,7 @@ tokio = { version = "1.45.1", features = [
 ] }
 tokio-util = "0.7.15"
 toml = "0.8"
-tower-lsp-server = "0.21.1"
+tower-lsp-server = "0.22.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
     "env-filter",
