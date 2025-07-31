@@ -188,6 +188,8 @@ impl BaconLs {
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
         drop(guard);
+
+        tracing::info!("publish diagnostics for {}", uri.to_string());
         match backend {
             Backend::Bacon => {
                 Bacon::publish_diagnostics(
