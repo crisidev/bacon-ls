@@ -1,12 +1,11 @@
 use std::{
     collections::HashMap,
-    env,
-    error::Error,
-    io,
+    env, io,
     path::{Path, PathBuf},
     process::Stdio,
 };
 
+use anyhow::Context;
 use serde::{Deserialize, Deserializer};
 use tokio::{fs, process::Command};
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
@@ -87,18 +86,39 @@ impl Cargo {
         message: &str,
         span: &CargoSpan,
         diagnostics: &mut HashMap<Uri, Vec<Diagnostic>>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> anyhow::Result<()> {
         if let Some(host) = span.file_name.authority().map(|auth| auth.host()) {
             let data = span.suggested_replacement.as_ref().map(|replacement| {
                 serde_json::json!(DiagnosticData {
                     corrections: vec![replacement.into()]
                 })
             });
-            let file_name = current_dir
-                .join(host.to_string())
-                .join(span.file_name.path().as_str().replacen("/", "", 1));
-            let url = str::parse::<Uri>(&format!("file://{}", file_name.display()))?;
-            let diagnostics: &mut Vec<Diagnostic> = diagnostics.entry(url).or_default();
+
+            let file_name = {
+                tracing::debug!(?current_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
+                tracing::debug!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
+
+                // If host is empty, the span.file_name is an absolute path.
+                let uri = if host.as_str().is_empty() {
+                    PathBuf::from(span.file_name.path().as_str())
+                } else {
+                    current_dir
+                        .join(host.to_string())
+                        .join(span.file_name.path().as_str().replacen("/", "", 1))
+                };
+
+                // Canonicalization is important, otherwise the file path cannot be compared with the
+                // paths we get passed from the LSP server.
+                uri.canonicalize()
+                    .with_context(|| format!("canonicalizing uri: {}", uri.display()))?
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))
+            }?;
+
+            let url = str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?;
+            tracing::debug!(uri = url.to_string(), ?host, "maybe adding diagnostic");
+            let diagnostics: &mut Vec<Diagnostic> = diagnostics.entry(url.clone()).or_default();
             let diagnostic = Diagnostic {
                 range: Range::new(
                     Position::new(span.line_start - 1, span.column_start - 1),
@@ -115,9 +135,11 @@ impl Cargo {
                     && diagnostic.severity == existing_diagnostic.severity
                     && diagnostic.message == existing_diagnostic.message
             }) {
+                tracing::debug!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
                 diagnostics.push(diagnostic);
             }
         }
+
         Ok(())
     }
 
@@ -125,7 +147,7 @@ impl Cargo {
         command_args: &str,
         cargo_env: &[String],
         destination_folder: &Path,
-    ) -> Result<HashMap<Uri, Vec<Diagnostic>>, Box<dyn Error>> {
+    ) -> anyhow::Result<HashMap<Uri, Vec<Diagnostic>>> {
         let mut args: Vec<&str> = command_args.split_whitespace().collect();
         args.push("--manifest-path");
         let cargo_toml = destination_folder.join("Cargo.toml").display().to_string();
@@ -151,7 +173,7 @@ impl Cargo {
         let stdout = String::from_utf8_lossy(&child.stdout);
         let stderr = String::from_utf8_lossy(&child.stderr);
         let mut diagnostics = HashMap::new();
-        let current_dir = env::current_dir()?;
+        let current_dir = env::current_dir().context("getting current dir")?;
 
         for line in stdout.lines() {
             match serde_json::from_str::<CargoLine>(line) {
@@ -167,8 +189,10 @@ impl Cargo {
                                         .trim_end_matches('\n'),
                                     &span,
                                     &mut diagnostics,
-                                )?;
+                                )
+                                .context("adding spans")?;
                             }
+
                             for children in message.children.into_iter() {
                                 for span in children.spans.into_iter() {
                                     Self::maybe_add_diagnostic(
@@ -177,21 +201,27 @@ impl Cargo {
                                         &children.message,
                                         &span,
                                         &mut diagnostics,
-                                    )?;
+                                    )
+                                    .context("adding child spans")?;
                                 }
                             }
                         }
                     }
                 }
+
                 Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
             }
         }
+
         let log_cargo = env::var("BACON_LS_LOG_CARGO").unwrap_or("off".to_string());
         if log_cargo != "off" {
             for line in stderr.lines() {
                 tracing::info!("[cargo stderr]{line}");
             }
         }
+
+        tracing::debug!("diags inner: {diagnostics:?}");
+
         Ok(diagnostics)
     }
 

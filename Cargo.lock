@@ -195,6 +195,7 @@ name = "bacon-ls"
 version = "0.21.0"
 dependencies = [
  "ansi-regex",
+ "anyhow",
  "argh",
  "cargo",
  "cargo-util",

@@ -18,6 +18,7 @@ bacon = []
 default = []
 
 [dependencies]
+anyhow = "1"
 ansi-regex = "0.1.0"
 argh = "0.1.13"
 cargo = { version = "0.88.0", features = ["all-static"] }
