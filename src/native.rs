@@ -94,10 +94,17 @@ impl Cargo {
                     corrections: vec![replacement.into()]
                 })
             });
+
+            // Canonicalization is important, otherwise the file path cannot be compared with the
+            // paths we get passed from the LSP server.
             let file_name = current_dir
                 .join(host.to_string())
-                .join(span.file_name.path().as_str().replacen("/", "", 1));
-            let url = str::parse::<Uri>(&format!("file://{}", file_name.display()))?;
+                .join(span.file_name.path().as_str().replacen("/", "", 1))
+                .canonicalize()?
+                .into_os_string()
+                .into_string()
+                .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?;
+            let url = str::parse::<Uri>(&format!("file://{file_name}"))?;
             let diagnostics: &mut Vec<Diagnostic> = diagnostics.entry(url).or_default();
             let diagnostic = Diagnostic {
                 range: Range::new(
