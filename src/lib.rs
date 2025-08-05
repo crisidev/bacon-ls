@@ -188,6 +188,8 @@ impl BaconLs {
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
         drop(guard);
+
+        tracing::info!(uri = uri.to_string(), "publish diagnostics");
         match backend {
             Backend::Bacon => {
                 Bacon::publish_diagnostics(
@@ -210,17 +212,22 @@ impl BaconLs {
                         .await;
                     let diagnostics = Cargo::cargo_diagnostics(&command_args, &cargo_env, &build_folder)
                         .await
+                        .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
                         .unwrap_or_default();
+                    progress.report(90).await;
                     if !diagnostics.contains_key(uri) {
-                        tracing::info!("cleaned up cargo diagnostics for {uri:?}");
+                        tracing::info!(
+                            uri = uri.to_string(),
+                            "cleaned up cargo diagnostics. does not contain key."
+                        );
                         client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
                     }
                     for (uri, diagnostics) in diagnostics.into_iter() {
                         if diagnostics.is_empty() {
-                            tracing::info!("cleaned up cargo diagnostics for {uri:?}");
+                            tracing::info!(uri = uri.to_string(), "cleaned up cargo diagnostics. empty.");
                             client.publish_diagnostics(uri, vec![], Some(version)).await;
                         } else if open_files.contains(&uri) {
-                            tracing::info!("sent {} cargo diagnostics for {uri:?}", diagnostics.len());
+                            tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
                             client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                         }
                     }
