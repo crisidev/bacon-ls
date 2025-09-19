@@ -171,7 +171,7 @@ and it can be configured like any other LSP server works best when
 is set to `true`.
 
 ```lua
-require("lspconfig").bacon_ls.setup({
+vim.lsp.config('bacon-ls', {
     init_options = {
         updateOnSave = true 
         updateOnSaveWaitMillis = 1000
