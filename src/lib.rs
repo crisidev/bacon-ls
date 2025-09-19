@@ -96,7 +96,7 @@ impl Default for State {
             open_files: HashSet::new(),
             cancel_token: CancellationToken::new(),
             sync_files_handle: None,
-            backend: Backend::Bacon,
+            backend: Backend::Cargo,
             diagnostics_version: 0,
             cargo_command_args: CARGO_COMMAND_ARGS.to_string(),
             cargo_env: vec![],
