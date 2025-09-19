@@ -89,14 +89,14 @@ impl LanguageServer for BaconLs {
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
                 }
-                if let Some(value) = values.get("useCargoBackend") {
+                if let Some(value) = values.get("useBaconBackend") {
                     state.backend = if value
                         .as_bool()
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                     {
-                        Backend::Cargo
-                    } else {
                         Backend::Bacon
+                    } else {
+                        Backend::Cargo
                     };
                 }
                 if let Some(value) = values.get("runBaconInBackground") {

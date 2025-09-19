@@ -27,7 +27,8 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
     * [Mason.nvim](#mason.nvim)
     * [Manual](#manual)
     * [Nix](#nix)
-* [Configuration](#configuration)
+* [Configuration - Native Cargo Backend](#configuration---native-cargo-backend)
+* [Configuration - Bacon Backend](#configuration---bacon-backend)
     * [Neovim - LazyVim](#neovim---lazyvim)
     * [Neovim - Manual](#neovim---manual)
     * [VSCode](#vscode)
@@ -100,7 +101,15 @@ bacon 3.8.0  # make sure you have at least 3.8.0
 
 Both [bacon](https://github.com/Canop/bacon/blob/main/flake.nix) and [bacon-ls](./flake.nix) can be consumed from their Nix flakes.
 
-## Configuration
+## Configuration - Native Cargo Backend
+
+This backend will just run `cargo` with json diagnostics enabled, parse them and update diagnostics.
+
+**NOTE: from `bacon-ls` v0.23.0, this is the default backend because it is faster and lighter than running `bacon`.
+
+## Configuration - Bacon Backend
+
+**NOTE: This works only with `bacon-ls` is configured with `initOptions = { useBaconBackend = true }`**
 
 Configure Bacon export settings with `bacon-ls` 🐽 export format and proper span support in the `bacon` preference file.
 To find where the file should be saved, you can use the command `bacon --prefs`:
@@ -135,6 +144,7 @@ supports the following values:
 - `locationsFile` Bacon export filename (default: `.bacon-locations`).
 - `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
 - `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
+- `useBaconBackend` if `true`, the backend spawning `bacon` will be used instead of the native (faster) Cargo backend.
 - `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
 - `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
 - `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
@@ -288,4 +298,5 @@ The LSP client reads them as response to `textDocument/diagnostic` and `workspac
 - ✅ Support Helix editor - working from `bacon-ls` 0.12.0
 - ✅ Nix flake support
 - ✅ Support [cargo workspaces](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html) - working from `bacon-ls` 0.14.0
+- ✅ Faster native cargo backend - default from `bacon-ls` 0.23.0
 - 🌍 Emacs configuration
