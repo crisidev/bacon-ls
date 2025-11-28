@@ -184,6 +184,7 @@ impl BaconLs {
         let backend = guard.backend;
         let command_args = guard.cargo_command_args.clone();
         let cargo_env = guard.cargo_env.clone();
+        let project_root = guard.project_root.clone();
         let build_folder = guard.build_folder.clone();
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
@@ -210,10 +211,11 @@ impl BaconLs {
                         .with_percentage(0)
                         .begin()
                         .await;
-                    let diagnostics = Cargo::cargo_diagnostics(&command_args, &cargo_env, &build_folder)
-                        .await
-                        .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
-                        .unwrap_or_default();
+                    let diagnostics =
+                        Cargo::cargo_diagnostics(&command_args, &cargo_env, project_root.as_ref(), &build_folder)
+                            .await
+                            .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
+                            .unwrap_or_default();
                     progress.report(90).await;
                     if !diagnostics.contains_key(uri) {
                         tracing::info!(
