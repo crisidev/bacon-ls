@@ -81,7 +81,7 @@ impl Cargo {
     }
 
     fn maybe_add_diagnostic(
-        current_dir: &Path,
+        project_root: Option<&PathBuf>,
         severity: &str,
         message: &str,
         span: &CargoSpan,
@@ -94,15 +94,23 @@ impl Cargo {
                 })
             });
 
+            let root_dir = {
+                if let Some(project_root) = project_root {
+                    project_root
+                } else {
+                    &env::current_dir().context("getting current dir")?
+                }
+            };
+
             let file_name = {
-                tracing::debug!(?current_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
+                tracing::debug!(?root_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
                 tracing::debug!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
 
                 // If host is empty, the span.file_name is an absolute path.
                 let uri = if host.as_str().is_empty() {
                     PathBuf::from(span.file_name.path().as_str())
                 } else {
-                    current_dir
+                    root_dir
                         .join(host.to_string())
                         .join(span.file_name.path().as_str().replacen("/", "", 1))
                 };
@@ -146,6 +154,7 @@ impl Cargo {
     pub(crate) async fn cargo_diagnostics(
         command_args: &str,
         cargo_env: &[String],
+        project_root: Option<&PathBuf>,
         destination_folder: &Path,
     ) -> anyhow::Result<HashMap<Uri, Vec<Diagnostic>>> {
         let mut args: Vec<&str> = command_args.split_whitespace().collect();
@@ -173,7 +182,6 @@ impl Cargo {
         let stdout = String::from_utf8_lossy(&child.stdout);
         let stderr = String::from_utf8_lossy(&child.stderr);
         let mut diagnostics = HashMap::new();
-        let current_dir = env::current_dir().context("getting current dir")?;
 
         for line in stdout.lines() {
             match serde_json::from_str::<CargoLine>(line) {
@@ -182,7 +190,7 @@ impl Cargo {
                         if message.message_type == "diagnostic" {
                             for span in message.spans.into_iter() {
                                 Self::maybe_add_diagnostic(
-                                    &current_dir,
+                                    project_root,
                                     &message.level,
                                     ansi_regex::ansi_regex()
                                         .replace_all(&message.rendered, "")
@@ -196,7 +204,7 @@ impl Cargo {
                             for children in message.children.into_iter() {
                                 for span in children.spans.into_iter() {
                                     Self::maybe_add_diagnostic(
-                                        &current_dir,
+                                        project_root,
                                         &children.level,
                                         &children.message,
                                         &span,

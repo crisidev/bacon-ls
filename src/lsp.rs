@@ -186,6 +186,7 @@ impl LanguageServer for BaconLs {
     async fn initialized(&self, _: InitializedParams) {
         let state = self.state.read().await;
         let proj_root = state.project_root.clone();
+        let build_folder = state.build_folder.clone();
         let run_bacon = state.run_bacon_in_background;
         let bacon_command = state.run_bacon_in_background_command.clone();
         let bacon_command_args = state.run_bacon_in_background_command_args.clone();
@@ -226,7 +227,9 @@ impl LanguageServer for BaconLs {
                             "building the first clean copy of this repo can take while",
                         )
                         .await;
-                    let _ = Cargo::cargo_diagnostics(&cargo_command_args, &cargo_env, &temporary_folder).await;
+                    let _ =
+                        Cargo::cargo_diagnostics(&cargo_command_args, &cargo_env, proj_root.as_ref(), &build_folder)
+                            .await;
                 }
             }
             if validate_prefs {
