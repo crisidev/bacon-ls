@@ -140,13 +140,13 @@ jobs:
       - name: Inspect dist
         run: |
           ls -al dist/*
-          npx glob dist/**/*.vsix
+          find dist -name "*.vsix" -type f
       - name: vsce publish
-        run: npx vsce publish --packagePath $(npx glob dist/**/*.vsix)
+        run: npx vsce publish --packagePath $(find dist -name "*.vsix" -type f)
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: ovsx publish
-        run: npx ovsx publish --packagePath $(npx glob dist/**/*.vsix)
+        run: npx ovsx publish --packagePath $(find dist -name "*.vsix" -type f)
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
       - name: Upload to GH release
