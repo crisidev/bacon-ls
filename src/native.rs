@@ -110,9 +110,16 @@ impl Cargo {
                 let uri = if host.as_str().is_empty() {
                     PathBuf::from(span.file_name.path().as_str())
                 } else {
-                    root_dir
-                        .join(host.to_string())
-                        .join(span.file_name.path().as_str().replacen("/", "", 1))
+                    let tmp = root_dir.join(host.to_string());
+                    // For first level paths, e.g., `build.rs`, this ensures that we dont join an
+                    // empty string (because `file_name` is empty), creating a non-existent
+                    // `build.rs/` directory in the source root, and therefore failing
+                    // canonicalization.
+                    if span.file_name.path().as_str().is_empty() {
+                        tmp
+                    } else {
+                        tmp.join(span.file_name.path().as_str().replacen("/", "", 1))
+                    }
                 };
 
                 // Canonicalization is important, otherwise the file path cannot be compared with the
