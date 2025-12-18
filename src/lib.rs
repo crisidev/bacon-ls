@@ -8,17 +8,14 @@ use std::time::Duration;
 
 use argh::FromArgs;
 use bacon::Bacon;
+use ls_types::{ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
 use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tower_lsp_server::lsp_types::ProgressToken;
-use tower_lsp_server::{
-    Client, LspService, Server,
-    lsp_types::{Uri, WorkspaceFolder},
-};
+use tower_lsp_server::{Client, LspService, Server};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 mod bacon;
