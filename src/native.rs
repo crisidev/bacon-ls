@@ -6,25 +6,11 @@ use std::{
 };
 
 use anyhow::Context;
+use ls_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 use serde::{Deserialize, Deserializer};
 use tokio::{fs, process::Command};
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 
 use crate::{DiagnosticData, PKG_NAME};
-
-#[derive(Debug, Deserialize, Clone, Copy)]
-enum CargoLevel {
-    #[serde(rename = "error")]
-    Error,
-    #[serde(rename = "warning")]
-    Warning,
-    #[serde(rename = "note")]
-    Note,
-    #[serde(rename = "failure-note")]
-    FailureNote,
-    #[serde(rename = "help")]
-    Help,
-}
 
 #[derive(Debug, Deserialize)]
 struct CargoSpan {
@@ -107,10 +93,10 @@ impl Cargo {
                 tracing::debug!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
 
                 // If host is empty, the span.file_name is an absolute path.
-                let uri = if host.as_str().is_empty() {
+                let uri = if host.is_empty() {
                     PathBuf::from(span.file_name.path().as_str())
                 } else {
-                    let tmp = root_dir.join(host.to_string());
+                    let tmp = root_dir.join(host);
                     // For first level paths, e.g., `build.rs`, this ensures that we dont join an
                     // empty string (because `file_name` is empty), creating a non-existent
                     // `build.rs/` directory in the source root, and therefore failing
@@ -300,7 +286,7 @@ impl Cargo {
     pub(crate) async fn copy_source_code(destination_folder: &Path) -> Result<(), io::Error> {
         let source_repo = Self::find_git_root_directory()
             .await
-            .ok_or(io::Error::new(io::ErrorKind::Other, "oh no!"))?;
+            .ok_or(io::Error::other("oh no!"))?;
         let output = Command::new("git")
             .args(["ls-files"])
             .current_dir(&source_repo)
@@ -308,7 +294,7 @@ impl Cargo {
             .await?;
 
         if !output.status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Failed to list tracked files"));
+            return Err(io::Error::other("Failed to list tracked files"));
         }
 
         let files = String::from_utf8_lossy(&output.stdout);

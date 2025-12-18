@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fs};
 
+use ls_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
@@ -14,8 +15,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
-use tower_lsp_server::{Client, UriExt};
+use tower_lsp_server::Client;
 
 use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 

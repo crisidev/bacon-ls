@@ -1,17 +1,15 @@
 use std::{collections::HashMap, env, time::Duration};
 
-use tokio::{fs, time::Instant};
-use tower_lsp_server::{
-    LanguageServer, jsonrpc,
-    lsp_types::{
-        CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams,
-        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
-        InitializeResult, InitializedParams, MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-        RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
-    },
+use ls_types::{
+    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
+    CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
+    MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities,
+    ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
+use tokio::{fs, time::Instant};
+use tower_lsp_server::{LanguageServer, jsonrpc};
 
 use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
 
