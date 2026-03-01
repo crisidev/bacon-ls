@@ -20,16 +20,16 @@ default = []
 [dependencies]
 anyhow = "1"
 ansi-regex = "0.1.0"
-argh = "0.1.13"
+argh = "0.1.14"
 cargo = { version = "0.94.0", features = ["all-static"] }
 flume = "0.12.0"
-ls-types = "0.0.2"
+ls-types = "0.0.3"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
-rand = "0.9.2"
+rand = "0.10.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-tempfile = "3.24.0"
+tempfile = "3.26.0"
 tokio = { version = "1.49.0", features = [
     "fs",
     "io-std",
@@ -40,7 +40,7 @@ tokio = { version = "1.49.0", features = [
     "time",
 ] }
 tokio-util = "0.7.18"
-toml = "0.9"
+toml = "1.0"
 tower-lsp-server = "0.23.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", default-features = false, features = [
