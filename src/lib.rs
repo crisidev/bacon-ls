@@ -10,7 +10,7 @@ use argh::FromArgs;
 use bacon::Bacon;
 use ls_types::{ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
