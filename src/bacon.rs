@@ -442,9 +442,9 @@ impl Bacon {
         let (locations_file, proj_root, wait_time, cancel_token) = {
             let state = state.read().await;
             (
-                state.locations_file.clone(),
+                state.bacon.locations_file.clone(),
                 state.project_root.clone(),
-                state.syncronize_all_open_files_wait_millis,
+                state.bacon.synchronize_all_open_files_wait,
                 state.cancel_token.clone(),
             )
         };
