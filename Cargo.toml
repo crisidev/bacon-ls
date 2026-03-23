@@ -11,7 +11,7 @@ repository = "https://github.com/crisidev/bacon-ls"
 license-file = "LICENSE"
 keywords = ["lsp", "bacon", "tokio", "neovim", "vim"]
 categories = ["command-line-utilities", "text-editors", "asynchronous"]
-rust-version = "1.85"
+rust-version = "1.94"
 
 [features]
 bacon = []

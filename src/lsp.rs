@@ -178,6 +178,13 @@ impl LanguageServer for BaconLs {
                 name: PKG_NAME.to_string(),
                 version: Some(PKG_VERSION.to_string()),
             }),
+            // See <https://clangd.llvm.org/extensions.html#utf-8-offsets>.
+            // which says:
+            // ```
+            // This extension has been deprecated with clangd-21 in favor of
+            // the positionEncoding introduced in LSP 3.17. It’ll go away with clangd-23
+            // ```
+            // So None should be fine
             offset_encoding: None,
         })
     }
