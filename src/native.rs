@@ -145,16 +145,12 @@ impl Cargo {
     }
 
     pub(crate) async fn cargo_diagnostics(
-        command_args: &str,
+        command_args: Vec<String>,
         cargo_env: &[String],
         project_root: Option<&PathBuf>,
         destination_folder: &Path,
     ) -> anyhow::Result<HashMap<Uri, Vec<Diagnostic>>> {
-        let mut args: Vec<&str> = command_args.split_whitespace().collect();
-        args.push("--manifest-path");
-        let cargo_toml = destination_folder.join("Cargo.toml").display().to_string();
-        args.push(&cargo_toml);
-        tracing::debug!("running command `cargo {args:?}`");
+        tracing::debug!("running command `cargo {command_args:?}`");
         let mut cmd = Command::new("cargo");
         for arg in cargo_env {
             let Some((key, val)) = arg.split_once('=') else {
@@ -163,7 +159,7 @@ impl Cargo {
             cmd.env(key, val);
         }
         let child = cmd
-            .args(command_args.split_whitespace())
+            .args(command_args)
             .current_dir(destination_folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

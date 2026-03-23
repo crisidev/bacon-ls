@@ -28,8 +28,6 @@ pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";
 const BACON_BACKGROUND_COMMAND: &str = "bacon";
 const BACON_BACKGROUND_COMMAND_ARGS: &str = "--headless -j bacon-ls";
-const CARGO_COMMAND_ARGS: &str =
-    "clippy --tests --all-features --all-targets --message-format json-diagnostic-rendered-ansi";
 
 /// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
@@ -60,7 +58,13 @@ pub(crate) enum PublishMode {
 
 #[derive(Debug)]
 pub(crate) struct CargoOptions {
-    pub(crate) command_args: String,
+    // "check" or "clippy"
+    pub(crate) command: String,
+    pub(crate) features: Vec<String>,
+    // `-p crate_name`
+    pub(crate) package: Option<String>,
+    // Extra arguments which do not have a nice wrapper
+    pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<String>,
     pub(crate) update_on_change: bool,
     pub(crate) update_on_change_cooldown: Duration,
@@ -68,13 +72,76 @@ pub(crate) struct CargoOptions {
 }
 
 impl CargoOptions {
+    pub(crate) fn build_command_args(&self) -> Vec<String> {
+        let mut args = vec![self.command.clone()];
+        args.push("--message-format=json-diagnostic-rendered-ansi".to_string());
+
+        if !self.features.is_empty() {
+            args.push("--features".to_string());
+            args.extend(self.features.iter().cloned());
+        }
+
+        if let Some(pkg) = self.package.clone() {
+            args.push("-p".to_string());
+            args.push(pkg);
+        }
+
+        for arg in self.extra_command_args.iter().cloned() {
+            args.push(arg);
+        }
+
+        args
+    }
+
     pub(crate) fn update_from_json_obj(&mut self, cargo_obj: &Map<String, Value>) -> jsonrpc::Result<()> {
-        if let Some(value) = cargo_obj.get("commandArguments") {
-            self.command_args = value
+        if let Some(value) = cargo_obj.get("command") {
+            self.command = value
                 .as_str()
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                 .to_string();
+        } else {
+            self.command = "check".to_string();
         }
+
+        if let Some(value) = cargo_obj.get("features") {
+            self.features = value
+                .as_array()
+                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(|s| s.to_string())
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
+                })
+                .collect::<jsonrpc::Result<Vec<_>>>()?;
+        } else {
+            self.features.clear();
+        }
+
+        if let Some(value) = cargo_obj.get("package") {
+            self.package = Some(
+                value
+                    .as_str()
+                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                    .to_string(),
+            );
+        } else {
+            self.package = None;
+        }
+
+        if let Some(value) = cargo_obj.get("extraCommandArguments") {
+            self.extra_command_args = value
+                .as_array()
+                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(|s| s.to_string())
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
+                })
+                .collect::<jsonrpc::Result<Vec<_>>>()?;
+        }
+
         if let Some(value) = cargo_obj.get("env") {
             self.env = value
                 .as_str()
@@ -83,6 +150,7 @@ impl CargoOptions {
                 .map(|x| x.trim().to_owned())
                 .collect::<Vec<_>>();
         }
+
         if let Some(value) = cargo_obj.get("cancelRunning") {
             let cancel = value
                 .as_bool()
@@ -93,11 +161,13 @@ impl CargoOptions {
                 PublishMode::QueueIfRunning(CargoState::Idle)
             };
         }
+
         if let Some(value) = cargo_obj.get("updateOnChange") {
             self.update_on_change = value
                 .as_bool()
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
         }
+
         if let Some(value) = cargo_obj.get("updateOnChangeCooldownMillis") {
             self.update_on_change_cooldown = Duration::from_millis(
                 value
@@ -113,11 +183,14 @@ impl CargoOptions {
 impl Default for CargoOptions {
     fn default() -> Self {
         Self {
-            command_args: CARGO_COMMAND_ARGS.to_string(),
             env: vec![],
             update_on_change: false,
             update_on_change_cooldown: Duration::from_millis(5000),
             publish_mode: PublishMode::CancelRunning,
+            command: "check".to_string(),
+            features: vec![],
+            extra_command_args: vec![],
+            package: None,
         }
     }
 }
@@ -386,10 +459,11 @@ impl BaconLs {
         let workspace_folders = guard.workspace_folders.clone();
         let open_files = guard.open_files.clone();
         let backend = guard.backend;
-        let command_args = guard.cargo.command_args.clone();
+        let cargo_command = guard.cargo.command.clone();
         let cargo_env = guard.cargo.env.clone();
         let project_root = guard.project_root.clone();
         let build_folder = guard.build_folder.clone();
+        let cmd_args = guard.cargo.build_command_args();
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
 
@@ -432,17 +506,16 @@ impl BaconLs {
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
                     let token = ProgressToken::Number(rand::rng().random::<i32>());
-                    let first_arg = command_args.split_whitespace().next().unwrap_or("check");
                     let progress = client
                         .progress(token, "running:")
-                        .with_message(format!("cargo {first_arg}"))
+                        .with_message(format!("cargo {cargo_command}"))
                         .with_percentage(0)
                         .begin()
                         .await;
 
                     let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
                     let cargo_future =
-                        Cargo::cargo_diagnostics(&command_args, &cargo_env, project_root.as_ref(), &build_folder);
+                        Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder);
 
                     let diagnostics = tokio::select! {
                         result = cargo_future => {

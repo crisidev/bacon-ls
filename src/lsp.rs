@@ -132,7 +132,7 @@ impl LanguageServer for BaconLs {
         let temporary_folder = state.build_folder.clone();
         let backend = state.backend;
         let update_on_change = state.cargo.update_on_change;
-        let cargo_command_args = state.cargo.command_args.clone();
+        let cargo_command_args = state.cargo.build_command_args();
         let cargo_env = state.cargo.env.clone();
         drop(state);
 
@@ -173,9 +173,8 @@ impl LanguageServer for BaconLs {
                             "building the first clean copy of this repo can take while",
                         )
                         .await;
-                    let _ =
-                        Cargo::cargo_diagnostics(&cargo_command_args, &cargo_env, proj_root.as_ref(), &build_folder)
-                            .await;
+                    let _ = Cargo::cargo_diagnostics(cargo_command_args, &cargo_env, proj_root.as_ref(), &build_folder)
+                        .await;
                 }
             }
             if let Backend::Bacon = backend {
