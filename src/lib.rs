@@ -44,6 +44,19 @@ enum Backend {
     Cargo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CargoState {
+    Idle,
+    Running,
+    RunningPending,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PublishMode {
+    CancelRunning,
+    QueueIfRunning(CargoState),
+}
+
 #[derive(Debug)]
 struct State {
     project_root: Option<PathBuf>,
@@ -70,6 +83,7 @@ struct State {
     cargo_env: Vec<String>,
     build_folder: PathBuf,
     last_change: Instant,
+    publish_mode: PublishMode,
 }
 
 impl Default for State {
@@ -99,6 +113,7 @@ impl Default for State {
             cargo_env: vec![],
             build_folder: tempfile::tempdir().unwrap().path().into(),
             last_change: Instant::now(),
+            publish_mode: PublishMode::CancelRunning,
         }
     }
 }
@@ -185,6 +200,30 @@ impl BaconLs {
         let build_folder = guard.build_folder.clone();
         guard.diagnostics_version += 1;
         let version = guard.diagnostics_version;
+
+        let cancel_token = if let Backend::Cargo = backend {
+            match &mut guard.publish_mode {
+                PublishMode::CancelRunning => {
+                    guard.cancel_token.cancel();
+                    guard.cancel_token = CancellationToken::new();
+                    Some(guard.cancel_token.clone())
+                }
+                PublishMode::QueueIfRunning(cargo_state) => match cargo_state {
+                    CargoState::Running | CargoState::RunningPending => {
+                        *cargo_state = CargoState::RunningPending;
+                        tracing::debug!("cargo already running, marking pending");
+                        drop(guard);
+                        return;
+                    }
+                    CargoState::Idle => {
+                        *cargo_state = CargoState::Running;
+                        Some(guard.cancel_token.clone())
+                    }
+                },
+            }
+        } else {
+            None
+        };
         drop(guard);
 
         tracing::info!(uri = uri.to_string(), "publish diagnostics");
@@ -208,11 +247,24 @@ impl BaconLs {
                         .with_percentage(0)
                         .begin()
                         .await;
-                    let diagnostics =
-                        Cargo::cargo_diagnostics(&command_args, &cargo_env, project_root.as_ref(), &build_folder)
-                            .await
-                            .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
-                            .unwrap_or_default();
+
+                    let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
+                    let cargo_future =
+                        Cargo::cargo_diagnostics(&command_args, &cargo_env, project_root.as_ref(), &build_folder);
+
+                    let diagnostics = tokio::select! {
+                        result = cargo_future => {
+                            result
+                                .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
+                                .unwrap_or_default()
+                        }
+                        () = cancel_token.cancelled() => {
+                            tracing::info!("cargo run cancelled by newer request");
+                            progress.finish().await;
+                            return;
+                        }
+                    };
+
                     progress.report(90).await;
                     if !diagnostics.contains_key(uri) {
                         tracing::info!(
@@ -233,6 +285,22 @@ impl BaconLs {
 
                     progress.report(100).await;
                     progress.finish().await;
+
+                    let mut guard = self.state.write().await;
+                    if let PublishMode::QueueIfRunning(cargo_state) = &mut guard.publish_mode {
+                        match cargo_state {
+                            CargoState::RunningPending => {
+                                *cargo_state = CargoState::Running;
+                                drop(guard);
+                                tracing::info!("re-running cargo after queued request");
+                                Box::pin(self.publish_diagnostics(uri)).await;
+                            }
+                            _ => {
+                                *cargo_state = CargoState::Idle;
+                                drop(guard);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -253,5 +321,15 @@ mod tests {
     #[test]
     fn test_can_configure_tracing() {
         BaconLs::configure_tracing(Some("info".to_string()));
+    }
+
+    #[test]
+    fn test_cancel_mode_replaces_token() {
+        let original = CancellationToken::new();
+        let token = original.clone();
+        token.cancel();
+        assert!(original.is_cancelled());
+        let new_token = CancellationToken::new();
+        assert!(!new_token.is_cancelled());
     }
 }

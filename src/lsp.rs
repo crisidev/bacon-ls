@@ -11,7 +11,7 @@ use ls_types::{
 use tokio::{fs, time::Instant};
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
-use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
+use crate::{Backend, BaconLs, Cargo, CargoState, DiagnosticData, PKG_NAME, PKG_VERSION, PublishMode, bacon::Bacon};
 
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -142,6 +142,14 @@ impl LanguageServer for BaconLs {
                             .as_u64()
                             .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
                     );
+                }
+                if let Some(value) = values.get("cancelRunningCargo") {
+                    let cancel = value
+                        .as_bool()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                    if !cancel {
+                        state.publish_mode = PublishMode::QueueIfRunning(CargoState::Idle);
+                    }
                 }
             }
         }
