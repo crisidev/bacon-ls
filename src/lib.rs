@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use argh::FromArgs;
 use bacon::Bacon;
-use cargo::core::features;
 use ls_types::{MessageType, ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
 use rand::RngExt;
@@ -427,35 +426,34 @@ impl BaconLs {
 
         let mut state = self.state.write().await;
         if let Some(values) = settings.as_object() {
-            if let Some(value) = values.get("useBaconBackend") {
-                if let Some(use_bacon) = value.as_bool() {
-                    state.backend = if use_bacon { Backend::Bacon } else { Backend::Cargo };
-                }
+            if let Some(value) = values.get("useBaconBackend")
+                && let Some(use_bacon) = value.as_bool()
+            {
+                state.backend = if use_bacon { Backend::Bacon } else { Backend::Cargo };
             }
-            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object()) {
-                if let Err(e) = state.cargo.update_from_json_obj(cargo_obj) {
-                    tracing::error!("invalid cargo configuration: {e}");
-                    client
-                        .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
-                        .await;
-                }
+            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
+                && let Err(e) = state.cargo.update_from_json_obj(cargo_obj)
+            {
+                tracing::error!("invalid cargo configuration: {e}");
+                client
+                    .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
+                    .await;
             }
-            if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object()) {
-                if let Err(e) = state.bacon.update_from_json_obj(bacon_obj) {
-                    tracing::error!("invalid bacon configuration: {e}");
-                    client
-                        .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
-                        .await;
-                }
+            if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
+                && let Err(e) = state.bacon.update_from_json_obj(bacon_obj)
+            {
+                tracing::error!("invalid bacon configuration: {e}");
+                client
+                    .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
+                    .await;
             }
         }
 
-        if let Backend::Cargo = state.backend {
-            if !state.cargo.update_on_change {
-                if let Some(root) = &state.project_root {
-                    state.build_folder = root.clone();
-                }
-            }
+        if let Backend::Cargo = state.backend
+            && !state.cargo.update_on_change
+            && let Some(root) = &state.project_root
+        {
+            state.build_folder = root.clone();
         }
         tracing::debug!("configuration after pull: {state:#?}");
     }

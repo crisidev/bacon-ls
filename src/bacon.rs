@@ -292,29 +292,29 @@ impl Bacon {
         match command.spawn() {
             Ok(mut child) => {
                 // Handle stdout
-                if log_bacon != "off" {
-                    if let Some(stdout) = child.stdout.take() {
-                        let reader = BufReader::new(stdout).lines();
-                        tokio::spawn(async move {
-                            let mut reader = reader;
-                            while let Ok(Some(line)) = reader.next_line().await {
-                                tracing::info!("[bacon stdout]: {}", line);
-                            }
-                        });
-                    }
+                if log_bacon != "off"
+                    && let Some(stdout) = child.stdout.take()
+                {
+                    let reader = BufReader::new(stdout).lines();
+                    tokio::spawn(async move {
+                        let mut reader = reader;
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            tracing::info!("[bacon stdout]: {}", line);
+                        }
+                    });
                 }
 
                 // Handle stderr
-                if log_bacon != "off" {
-                    if let Some(stderr) = child.stderr.take() {
-                        let reader = BufReader::new(stderr).lines();
-                        tokio::spawn(async move {
-                            let mut reader = reader;
-                            while let Ok(Some(line)) = reader.next_line().await {
-                                tracing::error!("[bacon stderr]: {}", line);
-                            }
-                        });
-                    }
+                if log_bacon != "off"
+                    && let Some(stderr) = child.stderr.take()
+                {
+                    let reader = BufReader::new(stderr).lines();
+                    tokio::spawn(async move {
+                        let mut reader = reader;
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            tracing::error!("[bacon stderr]: {}", line);
+                        }
+                    });
                 }
 
                 // Wait for the child process to finish
@@ -343,14 +343,14 @@ impl Bacon {
                     .uri
                     .to_file_path()
                     .expect("the workspace folder sent by the editor is not a file path");
-                if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
-                    if git_root.join("Cargo.toml").exists() {
-                        tracing::debug!(
-                            "found git root directory {}, using it for files base path",
-                            git_root.display()
-                        );
-                        folder_path = Cow::Owned(git_root);
-                    }
+                if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await
+                    && git_root.join("Cargo.toml").exists()
+                {
+                    tracing::debug!(
+                        "found git root directory {}, using it for files base path",
+                        git_root.display()
+                    );
+                    folder_path = Cow::Owned(git_root);
                 }
                 let mut bacon_locations = Vec::new();
                 if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
@@ -380,18 +380,12 @@ impl Bacon {
 
                                 if is_new_diagnostic {
                                     // Process the collected buffer before starting a new entry
-                                    if !buffer.is_empty() {
-                                        if let Some((path, diagnostic)) =
+                                    if !buffer.is_empty()
+                                        && let Some((path, diagnostic)) =
                                             Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
-                                        {
-                                            tracing::debug!("found diagnostic for {}", path.as_str());
-                                            Self::deduplicate_diagnostics(
-                                                path.clone(),
-                                                uri,
-                                                diagnostic,
-                                                &mut diagnostics,
-                                            );
-                                        }
+                                    {
+                                        tracing::debug!("found diagnostic for {}", path.as_str());
+                                        Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
                                     }
                                     // Reset buffer for new diagnostic entry
                                     buffer.clear();
@@ -405,12 +399,11 @@ impl Bacon {
                             }
 
                             // Flush the remaining buffer after loop ends
-                            if !buffer.is_empty() {
-                                if let Some((path, diagnostic)) =
+                            if !buffer.is_empty()
+                                && let Some((path, diagnostic)) =
                                     Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
-                                {
-                                    Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
-                                }
+                            {
+                                Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
                             }
                         }
                         Err(e) => {

@@ -205,32 +205,32 @@ impl Cargo {
             while let Some(line) = reader.next_line().await? {
                 match serde_json::from_str::<CargoLine>(&line) {
                     Ok(message) => {
-                        if let Some(message) = message.message {
-                            if message.message_type == "diagnostic" {
-                                for span in message.spans.into_iter() {
+                        if let Some(message) = message.message
+                            && message.message_type == "diagnostic"
+                        {
+                            for span in message.spans.into_iter() {
+                                Self::maybe_add_diagnostic(
+                                    project_root,
+                                    &message.level,
+                                    ansi_regex::ansi_regex()
+                                        .replace_all(&message.rendered, "")
+                                        .trim_end_matches('\n'),
+                                    &span,
+                                    &mut diagnostics,
+                                )
+                                .context("adding spans")?;
+                            }
+
+                            for children in message.children.into_iter() {
+                                for span in children.spans.into_iter() {
                                     Self::maybe_add_diagnostic(
                                         project_root,
-                                        &message.level,
-                                        ansi_regex::ansi_regex()
-                                            .replace_all(&message.rendered, "")
-                                            .trim_end_matches('\n'),
+                                        &children.level,
+                                        &children.message,
                                         &span,
                                         &mut diagnostics,
                                     )
-                                    .context("adding spans")?;
-                                }
-
-                                for children in message.children.into_iter() {
-                                    for span in children.spans.into_iter() {
-                                        Self::maybe_add_diagnostic(
-                                            project_root,
-                                            &children.level,
-                                            &children.message,
-                                            &span,
-                                            &mut diagnostics,
-                                        )
-                                        .context("adding child spans")?;
-                                    }
+                                    .context("adding child spans")?;
                                 }
                             }
                         }

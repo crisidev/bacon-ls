@@ -53,37 +53,36 @@ impl LanguageServer for BaconLs {
         state.workspace_folders = params.workspace_folders;
         state.diagnostics_data_supported = diagnostics_data_supported;
 
-        if let Some(ops) = params.initialization_options {
-            if let Some(values) = ops.as_object() {
-                tracing::debug!("client initialization options: {:#?}", values);
+        if let Some(ops) = params.initialization_options
+            && let Some(values) = ops.as_object()
+        {
+            tracing::debug!("client initialization options: {:#?}", values);
 
-                if let Some(value) = values.get("useBaconBackend") {
-                    state.backend = if value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                    {
-                        Backend::Bacon
-                    } else {
-                        Backend::Cargo
-                    };
-                }
+            if let Some(value) = values.get("useBaconBackend") {
+                state.backend = if value
+                    .as_bool()
+                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                {
+                    Backend::Bacon
+                } else {
+                    Backend::Cargo
+                };
+            }
 
-                if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object()) {
-                    state.cargo.update_from_json_obj(cargo_obj)?;
-                }
+            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object()) {
+                state.cargo.update_from_json_obj(cargo_obj)?;
+            }
 
-                if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object()) {
-                    state.bacon.update_from_json_obj(bacon_obj)?;
-                }
+            if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object()) {
+                state.bacon.update_from_json_obj(bacon_obj)?;
             }
         }
 
-        if let Backend::Cargo = state.backend {
-            if !state.cargo.update_on_change {
-                if let Some(root) = &state.project_root {
-                    state.build_folder = root.clone();
-                }
-            }
+        if let Backend::Cargo = state.backend
+            && !state.cargo.update_on_change
+            && let Some(root) = &state.project_root
+        {
+            state.build_folder = root.clone();
         }
         tracing::debug!("loaded state from lsp settings: {state:#?}");
         drop(state);
@@ -137,15 +136,14 @@ impl LanguageServer for BaconLs {
         let cargo_env = state.cargo.env.clone();
         drop(state);
 
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!(
-                        "error copying source code to temporary filder {}: {e}",
-                        temporary_folder.display()
-                    );
-                }
-            }
+        if let Backend::Cargo = backend
+            && update_on_change
+            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
+        {
+            tracing::error!(
+                "error copying source code to temporary filder {}: {e}",
+                temporary_folder.display()
+            );
         }
 
         if let Some(client) = self.client.as_ref() {
@@ -166,31 +164,31 @@ impl LanguageServer for BaconLs {
             {
                 tracing::error!("failed to register didChangeConfiguration: {e}");
             }
-            if let Backend::Cargo = backend {
-                if update_on_change {
-                    client
-                        .show_message(
-                            MessageType::INFO,
-                            "building the first clean copy of this repo can take while",
-                        )
-                        .await;
-                    let token = ProgressToken::Number(rand::rng().random::<i32>());
-                    let initial_progress = client
-                        .progress(token, "initial build:")
-                        .with_message("cargo check")
-                        .with_percentage(0)
-                        .begin()
-                        .await;
-                    let _ = Cargo::cargo_diagnostics(
-                        cargo_command_args,
-                        &cargo_env,
-                        proj_root.as_ref(),
-                        &build_folder,
-                        &initial_progress,
+            if let Backend::Cargo = backend
+                && update_on_change
+            {
+                client
+                    .show_message(
+                        MessageType::INFO,
+                        "building the first clean copy of this repo can take while",
                     )
                     .await;
-                    initial_progress.finish().await;
-                }
+                let token = ProgressToken::Number(rand::rng().random::<i32>());
+                let initial_progress = client
+                    .progress(token, "initial build:")
+                    .with_message("cargo check")
+                    .with_percentage(0)
+                    .begin()
+                    .await;
+                let _ = Cargo::cargo_diagnostics(
+                    cargo_command_args,
+                    &cargo_env,
+                    proj_root.as_ref(),
+                    &build_folder,
+                    &initial_progress,
+                )
+                .await;
+                initial_progress.finish().await;
             }
             if let Backend::Bacon = backend {
                 if validate_prefs {
@@ -264,12 +262,11 @@ impl LanguageServer for BaconLs {
         let update_on_change = state.cargo.update_on_change;
         state.open_files.insert(params.text_document.uri.clone());
         drop(state);
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                }
-            }
+        if let Backend::Cargo = backend
+            && update_on_change
+            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
+        {
+            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
         }
         self.publish_diagnostics(&params.text_document.uri).await;
     }
@@ -282,12 +279,11 @@ impl LanguageServer for BaconLs {
         let update_on_change = state.cargo.update_on_change;
         state.open_files.remove(&params.text_document.uri);
         drop(state);
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                }
-            }
+        if let Backend::Cargo = backend
+            && update_on_change
+            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
+        {
+            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
         }
         self.publish_diagnostics(&params.text_document.uri).await;
     }
@@ -306,12 +302,11 @@ impl LanguageServer for BaconLs {
         );
         if update_on_save {
             tokio::time::sleep(update_on_save_wait_millis).await;
-            if let Backend::Cargo = backend {
-                if update_on_change {
-                    if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                        tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                    }
-                }
+            if let Backend::Cargo = backend
+                && update_on_change
+                && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
+            {
+                tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
             }
             self.publish_diagnostics(&params.text_document.uri).await;
         }
@@ -392,12 +387,11 @@ impl LanguageServer for BaconLs {
                 state.open_files.remove(&old_uri);
                 state.open_files.insert(new_uri.clone());
                 drop(state);
-                if let Backend::Cargo = backend {
-                    if update_on_change {
-                        if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                        }
-                    }
+                if let Backend::Cargo = backend
+                    && update_on_change
+                    && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
+                {
+                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
                 }
                 self.publish_diagnostics(&new_uri).await;
             }
