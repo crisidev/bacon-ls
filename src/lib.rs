@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use argh::FromArgs;
 use bacon::Bacon;
+use cargo::core::features;
 use ls_types::{MessageType, ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
 use rand::RngExt;
@@ -78,7 +79,13 @@ impl CargoOptions {
 
         if !self.features.is_empty() {
             args.push("--features".to_string());
-            args.extend(self.features.iter().cloned());
+            let mut features = String::new();
+            for feature in &self.features[..self.features.len() - 1] {
+                features += feature;
+                features += ",";
+            }
+            features += &self.features[self.features.len() - 1];
+            args.push(features);
         }
 
         if let Some(pkg) = self.package.clone() {
