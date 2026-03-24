@@ -8,7 +8,8 @@ use std::{
 use anyhow::Context;
 use ls_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 use serde::{Deserialize, Deserializer};
-use tokio::{fs, process::Command};
+use tokio::{fs, io::AsyncBufReadExt, process::Command};
+use tower_lsp_server::{Bounded, NotCancellable, OngoingProgress};
 
 use crate::{DiagnosticData, PKG_NAME};
 
@@ -55,6 +56,30 @@ struct CargoLine {
 
 #[derive(Debug, Default)]
 pub(crate) struct Cargo;
+
+/// Parses the ouput line from cargo command that looks like:
+/// ```
+/// Building [====       ] 1/400: thing, thig2
+/// ```
+fn parse_building_line(line: &str) -> Option<(String, u32)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("Building") {
+        return None;
+    }
+    let after_bracket = trimmed.split("] ").nth(1)?;
+    let clean: String = after_bracket.chars().filter(|c| !c.is_control()).collect();
+
+    let (fraction, _crates) = clean.split_once(": ")?;
+    let (n_str, total_str) = fraction.split_once('/')?;
+    let n: u32 = n_str.parse().ok()?;
+    let total: u32 = total_str.parse().ok()?;
+    if total == 0 {
+        return None;
+    }
+    let pct = (n * 100 / total).min(99);
+
+    Some((clean, pct))
+}
 
 impl Cargo {
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
@@ -149,76 +174,103 @@ impl Cargo {
         cargo_env: &[String],
         project_root: Option<&PathBuf>,
         destination_folder: &Path,
+        progress: &OngoingProgress<Bounded, NotCancellable>,
     ) -> anyhow::Result<HashMap<Uri, Vec<Diagnostic>>> {
         tracing::debug!("running command `cargo {command_args:?}`");
         let mut cmd = Command::new("cargo");
+        cmd.env("CARGO_TERM_PROGRESS_WHEN", "always");
+        cmd.env("CARGO_TERM_PROGRESS_WIDTH", "80");
         for arg in cargo_env {
             let Some((key, val)) = arg.split_once('=') else {
                 continue;
             };
             cmd.env(key, val);
         }
-        let child = cmd
+        let mut child = cmd
             .args(command_args)
             .current_dir(destination_folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .output()
-            .await?;
-        tracing::debug!("cargo command finished with status {}", child.status);
+            .spawn()?;
 
-        let stdout = String::from_utf8_lossy(&child.stdout);
-        let stderr = String::from_utf8_lossy(&child.stderr);
+        let stdout = child.stdout.take().context("taking stdout")?;
+        let stderr = child.stderr.take().context("taking stderr")?;
+
         let mut diagnostics = HashMap::new();
+        let log_cargo = env::var("BACON_LS_LOG_CARGO").unwrap_or("off".to_string());
 
-        for line in stdout.lines() {
-            match serde_json::from_str::<CargoLine>(line) {
-                Ok(message) => {
-                    if let Some(message) = message.message {
-                        if message.message_type == "diagnostic" {
-                            for span in message.spans.into_iter() {
-                                Self::maybe_add_diagnostic(
-                                    project_root,
-                                    &message.level,
-                                    ansi_regex::ansi_regex()
-                                        .replace_all(&message.rendered, "")
-                                        .trim_end_matches('\n'),
-                                    &span,
-                                    &mut diagnostics,
-                                )
-                                .context("adding spans")?;
-                            }
-
-                            for children in message.children.into_iter() {
-                                for span in children.spans.into_iter() {
+        let stdout_future = async {
+            let mut reader = tokio::io::BufReader::new(stdout).lines();
+            while let Some(line) = reader.next_line().await? {
+                match serde_json::from_str::<CargoLine>(&line) {
+                    Ok(message) => {
+                        if let Some(message) = message.message {
+                            if message.message_type == "diagnostic" {
+                                for span in message.spans.into_iter() {
                                     Self::maybe_add_diagnostic(
                                         project_root,
-                                        &children.level,
-                                        &children.message,
+                                        &message.level,
+                                        ansi_regex::ansi_regex()
+                                            .replace_all(&message.rendered, "")
+                                            .trim_end_matches('\n'),
                                         &span,
                                         &mut diagnostics,
                                     )
-                                    .context("adding child spans")?;
+                                    .context("adding spans")?;
+                                }
+
+                                for children in message.children.into_iter() {
+                                    for span in children.spans.into_iter() {
+                                        Self::maybe_add_diagnostic(
+                                            project_root,
+                                            &children.level,
+                                            &children.message,
+                                            &span,
+                                            &mut diagnostics,
+                                        )
+                                        .context("adding child spans")?;
+                                    }
                                 }
                             }
                         }
                     }
+                    Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
                 }
-
-                Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
             }
+            anyhow::Ok(())
+        };
+
+        let stderr_future = async {
+            let mut reader = tokio::io::BufReader::new(stderr).lines();
+            while let Some(line) = reader.next_line().await? {
+                // cargo uses `\r` to keep the progress bar on one line
+                // so we resplit on it to make sure we don't miss an update
+                for segment in line.split('\r') {
+                    let segment = segment.trim();
+                    if segment.is_empty() {
+                        continue;
+                    }
+                    if log_cargo != "off" {
+                        tracing::info!("[cargo stderr]{segment}");
+                    }
+                    if let Some((message, pct)) = parse_building_line(segment) {
+                        progress.report_with_message(message, pct).await;
+                    }
+                }
+            }
+            anyhow::Ok(())
+        };
+
+        let (stdout_result, stderr_result) = tokio::join!(stdout_future, stderr_future);
+        stdout_result?;
+        if let Err(e) = stderr_result {
+            tracing::warn!("error reading cargo stderr: {e}");
         }
 
-        let log_cargo = env::var("BACON_LS_LOG_CARGO").unwrap_or("off".to_string());
-        if log_cargo != "off" {
-            for line in stderr.lines() {
-                tracing::info!("[cargo stderr]{line}");
-            }
-        }
-
+        let status = child.wait().await?;
+        tracing::debug!("cargo command finished with status {status}");
         tracing::debug!("diags inner: {diagnostics:?}");
-
         Ok(diagnostics)
     }
 

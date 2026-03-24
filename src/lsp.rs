@@ -4,10 +4,11 @@ use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities,
-    ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    MessageType, PositionEncodingKind, ProgressToken, PublishDiagnosticsClientCapabilities, RenameFilesParams,
+    ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
+use rand::RngExt;
 use tokio::{fs, time::Instant};
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -173,8 +174,22 @@ impl LanguageServer for BaconLs {
                             "building the first clean copy of this repo can take while",
                         )
                         .await;
-                    let _ = Cargo::cargo_diagnostics(cargo_command_args, &cargo_env, proj_root.as_ref(), &build_folder)
+                    let token = ProgressToken::Number(rand::rng().random::<i32>());
+                    let initial_progress = client
+                        .progress(token, "initial build:")
+                        .with_message("cargo check")
+                        .with_percentage(0)
+                        .begin()
                         .await;
+                    let _ = Cargo::cargo_diagnostics(
+                        cargo_command_args,
+                        &cargo_env,
+                        proj_root.as_ref(),
+                        &build_folder,
+                        &initial_progress,
+                    )
+                    .await;
+                    initial_progress.finish().await;
                 }
             }
             if let Backend::Bacon = backend {

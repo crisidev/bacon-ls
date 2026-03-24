@@ -522,7 +522,7 @@ impl BaconLs {
 
                     let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
                     let cargo_future =
-                        Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder);
+                        Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
 
                     let diagnostics = tokio::select! {
                         result = cargo_future => {
@@ -537,7 +537,6 @@ impl BaconLs {
                         }
                     };
 
-                    progress.report(90).await;
                     if !diagnostics.contains_key(uri) {
                         tracing::info!(
                             uri = uri.to_string(),
@@ -555,7 +554,6 @@ impl BaconLs {
                         }
                     }
 
-                    progress.report(100).await;
                     progress.finish().await;
 
                     let mut guard = self.state.write().await;
