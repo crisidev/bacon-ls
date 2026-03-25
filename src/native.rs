@@ -257,6 +257,11 @@ impl Cargo {
                     } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
                         progress.report_with_message(msg.trim_start(), 0).await;
                     } else if let Some(msg) = trimmed.strip_prefix("error:") {
+                        // This will catch things that looks like this
+                        // 1) `error: no such command: `fake`
+                        // 2) `error: expected `;`, found keyword `let`
+                        //
+                        // However we are only really interested in the `1)`
                         errors.push_str(msg);
                     }
                 }
@@ -282,7 +287,13 @@ impl Cargo {
         let status = child.wait().await?;
         tracing::debug!("cargo command finished with status {status}");
 
-        if !status.success() {
+        // We can't rely on exit code, as cargo exit with the same code regardless if its because
+        // of the args / invalid command or because the check fails due to the code being check
+        // has errors.
+        //
+        // So we do hacky thing we consider that the command was likely invalid if there are some
+        // error logs but no diagnostics
+        if !logged_errors.is_empty() && diagnostics.is_empty() {
             anyhow::bail!("cargo exited with {status}:{logged_errors}");
         }
 
