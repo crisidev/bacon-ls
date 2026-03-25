@@ -528,15 +528,22 @@ impl BaconLs {
                     let cargo_future =
                         Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
 
-                    let diagnostics = tokio::select! {
-                        result = cargo_future => {
-                            result
-                                .inspect_err(|err| tracing::error!(?err, "error building diagnostics"))
-                                .unwrap_or_default()
-                        }
+                    let result = tokio::select! {
+                        result = cargo_future => result,
                         () = cancel_token.cancelled() => {
                             tracing::info!("cargo run cancelled by newer request");
                             progress.finish().await;
+                            return;
+                        }
+                    };
+
+                    let diagnostics = match result {
+                        Ok(diagnostics) => diagnostics,
+                        Err(error) => {
+                            tracing::error!(?error, "error building diagnostics");
+                            progress.finish().await;
+                            client.log_message(MessageType::ERROR, format!("{error}")).await;
+                            client.show_message(MessageType::ERROR, format!("{error}")).await;
                             return;
                         }
                     };

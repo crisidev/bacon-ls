@@ -62,11 +62,10 @@ pub(crate) struct Cargo;
 /// Building [====       ] 1/400: thing, thig2
 /// ```
 fn parse_building_line(line: &str) -> Option<(String, u32)> {
-    let trimmed = line.trim_start();
-    if !trimmed.starts_with("Building") {
+    if !line.starts_with("Building") {
         return None;
     }
-    let after_bracket = trimmed.split("] ").nth(1)?;
+    let after_bracket = line.split("] ").nth(1)?;
     let clean: String = after_bracket.chars().filter(|c| !c.is_control()).collect();
 
     let (fraction, _crates) = clean.split_once(": ")?;
@@ -239,6 +238,7 @@ impl Cargo {
         };
 
         let stderr_future = async {
+            let mut errors = String::new();
             let mut reader = tokio::io::BufReader::new(stderr).lines();
             while let Some(line) = reader.next_line().await? {
                 // cargo uses `\r` to keep the progress bar on one line
@@ -251,22 +251,41 @@ impl Cargo {
                     if log_cargo != "off" {
                         tracing::info!("[cargo stderr]{segment}");
                     }
-                    if let Some((message, pct)) = parse_building_line(segment) {
+                    let trimmed = segment.trim_start();
+                    if let Some((message, pct)) = parse_building_line(trimmed) {
                         progress.report_with_message(message, pct).await;
+                    } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
+                        progress.report_with_message(msg.trim_start(), 0).await;
+                    } else if let Some(msg) = trimmed.strip_prefix("error:") {
+                        errors.push_str(msg);
                     }
                 }
             }
-            anyhow::Ok(())
+            anyhow::Ok(errors)
         };
 
         let (stdout_result, stderr_result) = tokio::join!(stdout_future, stderr_future);
+
+        // If something failed when parsing stdout we consider this an error as
+        // diagnostics are parsed from stdout
         stdout_result?;
-        if let Err(e) = stderr_result {
-            tracing::warn!("error reading cargo stderr: {e}");
-        }
+
+        // However we don't consider failing to parse stderr as bad
+        let logged_errors = match stderr_result {
+            Ok(logged_errors) => logged_errors,
+            Err(e) => {
+                tracing::warn!("error reading cargo stderr: {e}");
+                String::new()
+            }
+        };
 
         let status = child.wait().await?;
         tracing::debug!("cargo command finished with status {status}");
+
+        if !status.success() {
+            anyhow::bail!("cargo exited with {status}:{logged_errors}");
+        }
+
         tracing::debug!("diags inner: {diagnostics:?}");
         Ok(diagnostics)
     }

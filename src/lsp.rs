@@ -240,7 +240,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_change_configuration(&self, _params: ls_types::DidChangeConfigurationParams) {
-        tracing::trace!("client sent didChangeConfiguration, pulling configuration");
+        tracing::info!("client sent didChangeConfiguration, pulling configuration");
         self.pull_configuration().await;
     }
 
