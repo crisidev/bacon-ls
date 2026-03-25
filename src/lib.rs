@@ -278,9 +278,10 @@ struct State {
     workspace_folders: Option<Vec<WorkspaceFolder>>,
     bacon_command_handle: Option<JoinHandle<()>>,
     diagnostics_data_supported: bool,
-    open_files: HashSet<Uri>,
     cancel_token: CancellationToken,
     sync_files_handle: Option<JoinHandle<()>>,
+    open_files: HashSet<Uri>,
+    files_with_diags: HashSet<Uri>,
     backend: Backend,
     diagnostics_version: i32,
     build_folder: PathBuf,
@@ -303,6 +304,7 @@ impl Default for State {
             build_folder: tempfile::tempdir().unwrap().path().into(),
             cargo: CargoOptions::default(),
             bacon: BaconOptions::default(),
+            files_with_diags: HashSet::new(),
         }
     }
 }
@@ -445,7 +447,6 @@ impl BaconLs {
         let mut guard = self.state.write().await;
         let locations_file_name = guard.bacon.locations_file.clone();
         let workspace_folders = guard.workspace_folders.clone();
-        let open_files = guard.open_files.clone();
         let backend = guard.backend;
         let cargo_command = guard.cargo.command.clone();
         let cargo_env = guard.cargo.env.clone();
@@ -525,37 +526,41 @@ impl BaconLs {
                         }
                     };
 
-                    if !diagnostics.contains_key(uri) {
-                        tracing::info!(
-                            uri = uri.to_string(),
-                            "cleaned up cargo diagnostics. does not contain key."
-                        );
-                        client.publish_diagnostics(uri.clone(), vec![], Some(version)).await;
+                    let mut state = self.state.write().await;
+                    // If it no longer has diagnostics we clear them
+                    let files_to_clear = state.files_with_diags.extract_if(|file| {
+                        // Just to be sure we do an empty vec check, but it's impossible to
+                        // happen I think
+                        diagnostics.get(file).is_none_or(|diags| diags.is_empty())
+                    });
+                    for file in files_to_clear {
+                        tracing::info!(uri = file.to_string(), "Cleaned diagnostics");
+                        client.publish_diagnostics(file, Vec::new(), Some(version)).await;
                     }
+
                     for (uri, diagnostics) in diagnostics.into_iter() {
-                        if diagnostics.is_empty() {
-                            tracing::info!(uri = uri.to_string(), "cleaned up cargo diagnostics. empty.");
-                            client.publish_diagnostics(uri, vec![], Some(version)).await;
-                        } else if open_files.contains(&uri) {
-                            tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+                        tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+                        // We cleared the files which no longer had diagnostics before
+                        // so now we are only adding files with diagnostics
+                        if !diagnostics.is_empty() {
+                            let _ = state.files_with_diags.insert(uri.clone());
                             client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                         }
                     }
 
                     progress.finish().await;
 
-                    let mut guard = self.state.write().await;
-                    if let PublishMode::QueueIfRunning(cargo_state) = &mut guard.cargo.publish_mode {
+                    if let PublishMode::QueueIfRunning(cargo_state) = &mut state.cargo.publish_mode {
                         match cargo_state {
                             CargoState::RunningPending => {
                                 *cargo_state = CargoState::Running;
-                                drop(guard);
+                                drop(state);
                                 tracing::info!("re-running cargo after queued request");
                                 Box::pin(self.publish_diagnostics(uri)).await;
                             }
                             _ => {
                                 *cargo_state = CargoState::Idle;
-                                drop(guard);
+                                drop(state);
                             }
                         }
                     }
