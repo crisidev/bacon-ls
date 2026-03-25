@@ -105,8 +105,6 @@ impl CargoOptions {
                 .as_str()
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                 .to_string();
-        } else {
-            self.command = "check".to_string();
         }
 
         if let Some(value) = cargo_obj.get("features") {
@@ -120,8 +118,6 @@ impl CargoOptions {
                         .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
                 })
                 .collect::<jsonrpc::Result<Vec<_>>>()?;
-        } else {
-            self.features.clear();
         }
 
         if let Some(value) = cargo_obj.get("package") {
@@ -131,8 +127,6 @@ impl CargoOptions {
                     .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                     .to_string(),
             );
-        } else {
-            self.package = None;
         }
 
         if let Some(value) = cargo_obj.get("extraCommandArguments") {
@@ -184,12 +178,16 @@ impl CargoOptions {
 
         Ok(())
     }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Default for CargoOptions {
     fn default() -> Self {
         Self {
-            env: vec![],
+            env: Vec::new(),
             update_on_change: false,
             update_on_change_cooldown: Duration::from_millis(5000),
             publish_mode: PublishMode::CancelRunning,
@@ -431,14 +429,17 @@ impl BaconLs {
             {
                 state.backend = if use_bacon { Backend::Bacon } else { Backend::Cargo };
             }
-            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
-                && let Err(e) = state.cargo.update_from_json_obj(cargo_obj)
-            {
-                tracing::error!("invalid cargo configuration: {e}");
-                client
-                    .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
-                    .await;
+
+            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object()) {
+                state.cargo.reset();
+                if let Err(e) = state.cargo.update_from_json_obj(cargo_obj) {
+                    tracing::error!("invalid cargo configuration: {e}");
+                    client
+                        .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
+                        .await;
+                }
             }
+
             if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
                 && let Err(e) = state.bacon.update_from_json_obj(bacon_obj)
             {
