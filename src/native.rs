@@ -171,7 +171,7 @@ impl Cargo {
 
     pub(crate) async fn cargo_diagnostics(
         command_args: Vec<String>,
-        cargo_env: &[String],
+        cargo_env: &[(String, String)],
         project_root: Option<&PathBuf>,
         destination_folder: &Path,
         progress: &OngoingProgress<Bounded, NotCancellable>,
@@ -180,10 +180,7 @@ impl Cargo {
         let mut cmd = Command::new("cargo");
         cmd.env("CARGO_TERM_PROGRESS_WHEN", "always");
         cmd.env("CARGO_TERM_PROGRESS_WIDTH", "80");
-        for arg in cargo_env {
-            let Some((key, val)) = arg.split_once('=') else {
-                continue;
-            };
+        for (key, val) in cargo_env {
             cmd.env(key, val);
         }
         let mut child = cmd

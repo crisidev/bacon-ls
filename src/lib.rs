@@ -65,7 +65,7 @@ pub(crate) struct CargoOptions {
     pub(crate) package: Option<String>,
     // Extra arguments which do not have a nice wrapper
     pub(crate) extra_command_args: Vec<String>,
-    pub(crate) env: Vec<String>,
+    pub(crate) env: Vec<(String, String)>,
     pub(crate) update_on_change: bool,
     pub(crate) update_on_change_cooldown: Duration,
     pub(crate) publish_mode: PublishMode,
@@ -144,11 +144,16 @@ impl CargoOptions {
 
         if let Some(value) = cargo_obj.get("env") {
             self.env = value
-                .as_str()
+                .as_object()
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                .split(',')
-                .map(|x| x.trim().to_owned())
-                .collect::<Vec<_>>();
+                .iter()
+                .map(|(k, v)| {
+                    let val = v
+                        .as_str()
+                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                    Ok((k.clone(), val.to_string()))
+                })
+                .collect::<jsonrpc::Result<Vec<_>>>()?;
         }
 
         if let Some(value) = cargo_obj.get("cancelRunning") {
