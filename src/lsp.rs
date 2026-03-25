@@ -8,7 +8,6 @@ use ls_types::{
     ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
-use rand::RngExt;
 use tokio::{fs, time::Instant};
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -163,7 +162,7 @@ impl LanguageServer for BaconLs {
                         "building the first clean copy of this repo can take while",
                     )
                     .await;
-                let token = ProgressToken::Number(rand::rng().random::<i32>());
+                let token = ProgressToken::String("init_build".to_string());
                 let initial_progress = client
                     .progress(token, "initial build:")
                     .with_message("cargo check")

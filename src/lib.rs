@@ -10,7 +10,6 @@ use argh::FromArgs;
 use bacon::Bacon;
 use ls_types::{MessageType, ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
-use rand::RngExt;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -516,7 +515,7 @@ impl BaconLs {
             }
             Backend::Cargo => {
                 if let Some(client) = self.client.as_ref() {
-                    let token = ProgressToken::Number(rand::rng().random::<i32>());
+                    let token = ProgressToken::Number(version);
                     let progress = client
                         .progress(token, "running:")
                         .with_message(format!("cargo {cargo_command}"))
