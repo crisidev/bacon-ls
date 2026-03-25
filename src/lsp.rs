@@ -154,16 +154,6 @@ impl LanguageServer for BaconLs {
                     format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
                 )
                 .await;
-            if let Err(e) = client
-                .register_capability(vec![ls_types::Registration {
-                    id: "workspace/didChangeConfiguration".to_string(),
-                    method: "workspace/didChangeConfiguration".to_string(),
-                    register_options: None,
-                }])
-                .await
-            {
-                tracing::error!("failed to register didChangeConfiguration: {e}");
-            }
             if let Backend::Cargo = backend
                 && update_on_change
             {
