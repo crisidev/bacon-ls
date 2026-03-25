@@ -4,11 +4,10 @@ use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, PositionEncodingKind, ProgressToken, PublishDiagnosticsClientCapabilities, RenameFilesParams,
-    ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities,
+    ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
-use tokio::{fs, time::Instant};
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
 use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
@@ -78,7 +77,6 @@ impl LanguageServer for BaconLs {
         }
 
         if let Backend::Cargo = state.backend
-            && !state.cargo.update_on_change
             && let Some(root) = &state.project_root
         {
             state.build_folder = root.clone();
@@ -121,29 +119,14 @@ impl LanguageServer for BaconLs {
 
         let state = self.state.read().await;
         let proj_root = state.project_root.clone();
-        let build_folder = state.build_folder.clone();
         let run_bacon = state.bacon.run_in_background;
         let bacon_command = state.bacon.run_in_background_command.clone();
         let bacon_command_args = state.bacon.run_in_background_command_args.clone();
         let create_bacon_prefs = state.bacon.create_preferences_file;
         let validate_prefs = state.bacon.validate_preferences;
         let cancel_token = state.cancel_token.clone();
-        let temporary_folder = state.build_folder.clone();
         let backend = state.backend;
-        let update_on_change = state.cargo.update_on_change;
-        let cargo_command_args = state.cargo.build_command_args();
-        let cargo_env = state.cargo.env.clone();
         drop(state);
-
-        if let Backend::Cargo = backend
-            && update_on_change
-            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
-        {
-            tracing::error!(
-                "error copying source code to temporary filder {}: {e}",
-                temporary_folder.display()
-            );
-        }
 
         if let Some(client) = self.client.as_ref() {
             tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
@@ -153,32 +136,6 @@ impl LanguageServer for BaconLs {
                     format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
                 )
                 .await;
-            if let Backend::Cargo = backend
-                && update_on_change
-            {
-                client
-                    .show_message(
-                        MessageType::INFO,
-                        "building the first clean copy of this repo can take while",
-                    )
-                    .await;
-                let token = ProgressToken::String("init_build".to_string());
-                let initial_progress = client
-                    .progress(token, "initial build:")
-                    .with_message("cargo check")
-                    .with_percentage(0)
-                    .begin()
-                    .await;
-                let _ = Cargo::cargo_diagnostics(
-                    cargo_command_args,
-                    &cargo_env,
-                    proj_root.as_ref(),
-                    &build_folder,
-                    &initial_progress,
-                )
-                .await;
-                initial_progress.finish().await;
-            }
             if let Backend::Bacon = backend {
                 if validate_prefs {
                     if let Err(e) = Bacon::validate_preferences(&bacon_command, create_bacon_prefs).await {
@@ -246,34 +203,16 @@ impl LanguageServer for BaconLs {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         tracing::trace!("client sent didOpen request");
         let mut state = self.state.write().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.cargo.update_on_change;
         state.open_files.insert(params.text_document.uri.clone());
         drop(state);
-        if let Backend::Cargo = backend
-            && update_on_change
-            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
-        {
-            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-        }
         self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         tracing::trace!("client sent didClose request");
         let mut state = self.state.write().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.cargo.update_on_change;
         state.open_files.remove(&params.text_document.uri);
         drop(state);
-        if let Backend::Cargo = backend
-            && update_on_change
-            && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
-        {
-            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-        }
         self.publish_diagnostics(&params.text_document.uri).await;
     }
 
@@ -281,9 +220,6 @@ impl LanguageServer for BaconLs {
         let state = self.state.read().await;
         let update_on_save = state.bacon.update_on_save;
         let update_on_save_wait_millis = state.bacon.update_on_save_wait;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.cargo.update_on_change;
         drop(state);
         tracing::debug!(
             "client sent didSave request, updateOnSave is {update_on_save} for {:?} after {update_on_save_wait_millis:?}",
@@ -291,63 +227,12 @@ impl LanguageServer for BaconLs {
         );
         if update_on_save {
             tokio::time::sleep(update_on_save_wait_millis).await;
-            if let Backend::Cargo = backend
-                && update_on_change
-                && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
-            {
-                tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-            }
             self.publish_diagnostics(&params.text_document.uri).await;
         }
     }
 
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let state = self.state.read().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.cargo.update_on_change;
-        let update_on_change_cooldown = state.cargo.update_on_change_cooldown;
-        let last_change = state.last_change;
-        drop(state);
-        if let Backend::Cargo = backend {
-            if !update_on_change {
-                tracing::debug!("skipping didChange execution, update_on_change is false");
-                return;
-            }
-            if last_change.elapsed() < update_on_change_cooldown {
-                tracing::debug!("skipping didChange execution: still in cooldown");
-                return;
-            }
-            if let Some(source_folder) = Cargo::find_git_root_directory().await {
-                let file = params.text_document.uri.path().as_str().replacen(
-                    &source_folder.display().to_string(),
-                    &temporary_folder.display().to_string(),
-                    1,
-                );
-                if let Some(change) = params.content_changes.first() {
-                    if change.range.is_none() && change.range_length.is_none() {
-                        match fs::write(&file, &change.text).await {
-                            Ok(()) => {
-                                tracing::debug!(
-                                    "success overriding file {file} with full changed content from LSP client"
-                                );
-                                self.publish_diagnostics(&params.text_document.uri).await;
-                            }
-                            Err(e) => tracing::debug!(
-                                "error overriding file {file} with full changed content from LSP client: {e}"
-                            ),
-                        }
-                    } else {
-                        tracing::debug!("skipping overriding file {file} with changed partial content from LSP client");
-                    }
-                } else {
-                    tracing::debug!("skipping overriding file {file}, no changed content from LSP client");
-                }
-                self.state.write().await.last_change = Instant::now();
-            }
-        } else {
-            tracing::trace!("client sent didChange request, nothing to do");
-        }
+    async fn did_change(&self, _params: DidChangeTextDocumentParams) {
+        tracing::trace!("client sent didChange request, nothing to do");
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
@@ -370,18 +255,9 @@ impl LanguageServer for BaconLs {
             );
             if let (Ok(old_uri), Ok(new_uri)) = (str::parse::<Uri>(&file.old_uri), str::parse::<Uri>(&file.new_uri)) {
                 let mut state = self.state.write().await;
-                let temporary_folder = state.build_folder.clone();
-                let backend = state.backend;
-                let update_on_change = state.cargo.update_on_change;
                 state.open_files.remove(&old_uri);
                 state.open_files.insert(new_uri.clone());
                 drop(state);
-                if let Backend::Cargo = backend
-                    && update_on_change
-                    && let Err(e) = Cargo::copy_source_code(&temporary_folder).await
-                {
-                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                }
                 self.publish_diagnostics(&new_uri).await;
             }
         }

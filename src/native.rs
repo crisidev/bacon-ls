@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env, io,
+    env,
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use ls_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 use serde::{Deserialize, Deserializer};
-use tokio::{fs, io::AsyncBufReadExt, process::Command};
+use tokio::{io::AsyncBufReadExt, process::Command};
 use tower_lsp_server::{Bounded, NotCancellable, OngoingProgress};
 
 use crate::{DiagnosticData, PKG_NAME};
@@ -356,39 +356,5 @@ impl Cargo {
         }
 
         None
-    }
-
-    pub(crate) async fn copy_source_code(destination_folder: &Path) -> Result<(), io::Error> {
-        let source_repo = Self::find_git_root_directory()
-            .await
-            .ok_or(io::Error::other("oh no!"))?;
-        let output = Command::new("git")
-            .args(["ls-files"])
-            .current_dir(&source_repo)
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            return Err(io::Error::other("Failed to list tracked files"));
-        }
-
-        let files = String::from_utf8_lossy(&output.stdout);
-        tracing::debug!(
-            "copying all files from {} to {}",
-            source_repo.display(),
-            destination_folder.display()
-        );
-        for file in files.lines() {
-            let src_path = source_repo.join(file);
-            let dest_path = destination_folder.join(file);
-
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent).await?; // Ensure the directory exists
-            }
-
-            fs::copy(&src_path, &dest_path).await?;
-        }
-
-        Ok(())
     }
 }

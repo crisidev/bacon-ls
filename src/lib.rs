@@ -13,7 +13,6 @@ use native::Cargo;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::{Client, LspService, Server, jsonrpc};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -65,8 +64,6 @@ pub(crate) struct CargoOptions {
     // Extra arguments which do not have a nice wrapper
     pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
-    pub(crate) update_on_change: bool,
-    pub(crate) update_on_change_cooldown: Duration,
     pub(crate) publish_mode: PublishMode,
 }
 
@@ -166,20 +163,6 @@ impl CargoOptions {
             };
         }
 
-        if let Some(value) = cargo_obj.get("updateOnChange") {
-            self.update_on_change = value
-                .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-        }
-
-        if let Some(value) = cargo_obj.get("updateOnChangeCooldownMillis") {
-            self.update_on_change_cooldown = Duration::from_millis(
-                value
-                    .as_u64()
-                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
-            );
-        }
-
         Ok(())
     }
 
@@ -192,8 +175,6 @@ impl Default for CargoOptions {
     fn default() -> Self {
         Self {
             env: Vec::new(),
-            update_on_change: false,
-            update_on_change_cooldown: Duration::from_millis(5000),
             publish_mode: PublishMode::CancelRunning,
             command: "check".to_string(),
             features: vec![],
@@ -303,7 +284,6 @@ struct State {
     backend: Backend,
     diagnostics_version: i32,
     build_folder: PathBuf,
-    last_change: Instant,
     cargo: CargoOptions,
     bacon: BaconOptions,
 }
@@ -321,7 +301,6 @@ impl Default for State {
             backend: Backend::Cargo,
             diagnostics_version: 0,
             build_folder: tempfile::tempdir().unwrap().path().into(),
-            last_change: Instant::now(),
             cargo: CargoOptions::default(),
             bacon: BaconOptions::default(),
         }
@@ -455,7 +434,6 @@ impl BaconLs {
         }
 
         if let Backend::Cargo = state.backend
-            && !state.cargo.update_on_change
             && let Some(root) = &state.project_root
         {
             state.build_folder = root.clone();
