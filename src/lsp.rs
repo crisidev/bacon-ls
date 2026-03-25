@@ -128,62 +128,53 @@ impl LanguageServer for BaconLs {
         let backend = state.backend;
         drop(state);
 
-        if let Some(client) = self.client.as_ref() {
-            tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
-            client
-                .log_message(
-                    MessageType::INFO,
-                    format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
-                )
-                .await;
-            if let Backend::Bacon = backend {
-                if validate_prefs {
-                    if let Err(e) = Bacon::validate_preferences(&bacon_command, create_bacon_prefs).await {
-                        tracing::error!("{e}");
-                        client.show_message(MessageType::ERROR, e).await;
-                    }
-                } else {
-                    tracing::warn!("skipping validation of bacon preferences, validateBaconPreferences is false");
+        tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
+            )
+            .await;
+        if let Backend::Bacon = backend {
+            if validate_prefs {
+                if let Err(e) = Bacon::validate_preferences(&bacon_command, create_bacon_prefs).await {
+                    tracing::error!("{e}");
+                    self.client.show_message(MessageType::ERROR, e).await;
                 }
+            } else {
+                tracing::warn!("skipping validation of bacon preferences, validateBaconPreferences is false");
+            }
 
-                if run_bacon {
-                    let mut current_dir = None;
-                    if let Ok(cwd) = env::current_dir() {
-                        current_dir = Self::find_git_root_directory(&cwd).await;
-                        if let Some(dir) = &current_dir {
-                            if !dir.join("Cargo.toml").exists() {
-                                current_dir = proj_root;
-                            }
-                        } else {
+            if run_bacon {
+                let mut current_dir = None;
+                if let Ok(cwd) = env::current_dir() {
+                    current_dir = Self::find_git_root_directory(&cwd).await;
+                    if let Some(dir) = &current_dir {
+                        if !dir.join("Cargo.toml").exists() {
                             current_dir = proj_root;
                         }
+                    } else {
+                        current_dir = proj_root;
                     }
-
-                    match Bacon::run_in_background(
-                        &bacon_command,
-                        &bacon_command_args,
-                        current_dir.as_ref(),
-                        cancel_token,
-                    )
-                    .await
-                    {
-                        Ok(command) => {
-                            tracing::info!("bacon was started successfully and is running in the background");
-                            let mut state = self.state.write().await;
-                            state.bacon_command_handle = Some(command);
-                            drop(state);
-                        }
-                        Err(e) => {
-                            tracing::error!("{e}");
-                            client.show_message(MessageType::ERROR, e).await;
-                        }
-                    }
-                } else {
-                    tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
                 }
+
+                match Bacon::run_in_background(&bacon_command, &bacon_command_args, current_dir.as_ref(), cancel_token)
+                    .await
+                {
+                    Ok(command) => {
+                        tracing::info!("bacon was started successfully and is running in the background");
+                        let mut state = self.state.write().await;
+                        state.bacon_command_handle = Some(command);
+                        drop(state);
+                    }
+                    Err(e) => {
+                        tracing::error!("{e}");
+                        self.client.show_message(MessageType::ERROR, e).await;
+                    }
+                }
+            } else {
+                tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
             }
-        } else {
-            tracing::error!("client doesn't seem to be connected, the LSP server will not function properly");
         }
         let task_state = self.state.clone();
         let task_client = self.client.clone();
@@ -330,15 +321,13 @@ impl LanguageServer for BaconLs {
         if let Some(handle) = state.sync_files_handle.take() {
             let _ = handle.await;
         }
-        if let Some(client) = self.client.as_ref() {
-            tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
-            client
-                .log_message(
-                    MessageType::INFO,
-                    format!("{PKG_NAME} v{PKG_VERSION} lsp server stopped"),
-                )
-                .await;
-        }
+        tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("{PKG_NAME} v{PKG_VERSION} lsp server stopped"),
+            )
+            .await;
         Ok(())
     }
 }

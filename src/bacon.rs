@@ -428,7 +428,7 @@ impl Bacon {
             .collect::<Vec<Diagnostic>>()
     }
 
-    pub(crate) async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
+    pub(crate) async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
         tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
@@ -496,22 +496,20 @@ impl Bacon {
                 open_files.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
             );
             for uri in open_files.iter() {
-                Self::publish_diagnostics(client.as_ref(), uri, &locations_file, workspace_folders.as_deref()).await;
+                Self::publish_diagnostics(&client, uri, &locations_file, workspace_folders.as_deref()).await;
             }
         }
     }
 
     pub(crate) async fn publish_diagnostics(
-        client: Option<&Arc<Client>>,
+        client: &Arc<Client>,
         uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) {
         let diagnostics_vec = Self::diagnostics_vec(uri, locations_file_name, workspace_folders).await;
         tracing::info!("sent {} bacon diagnostics for {uri:?}", diagnostics_vec.len());
-        if let Some(client) = client {
-            client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
-        }
+        client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
     }
 }
 

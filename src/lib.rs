@@ -314,16 +314,16 @@ struct DiagnosticData<'c> {
     corrections: Vec<Cow<'c, str>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BaconLs {
-    client: Option<Arc<Client>>,
+    client: Arc<Client>,
     state: Arc<RwLock<State>>,
 }
 
 impl BaconLs {
     fn new(client: Client) -> Self {
         Self {
-            client: Some(Arc::new(client)),
+            client: Arc::new(client),
             state: Arc::new(RwLock::new(State::default())),
         }
     }
@@ -381,12 +381,9 @@ impl BaconLs {
 
     async fn pull_configuration(&self) {
         tracing::info!("pull_configuration");
-        let Some(client) = self.client.as_ref() else {
-            tracing::error!("no client to pull config from");
-            return;
-        };
 
-        let response = match client
+        let response = match self
+            .client
             .configuration(vec![ls_types::ConfigurationItem {
                 scope_uri: None,
                 section: Some("bacon_ls".to_string()),
@@ -419,7 +416,7 @@ impl BaconLs {
                 state.cargo.reset();
                 if let Err(e) = state.cargo.update_from_json_obj(cargo_obj) {
                     tracing::error!("invalid cargo configuration: {e}");
-                    client
+                    self.client
                         .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
                         .await;
                 }
@@ -429,7 +426,7 @@ impl BaconLs {
                 && let Err(e) = state.bacon.update_from_json_obj(bacon_obj)
             {
                 tracing::error!("invalid bacon configuration: {e}");
-                client
+                self.client
                     .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
                     .await;
             }
@@ -484,84 +481,77 @@ impl BaconLs {
         tracing::info!(uri = uri.to_string(), "publish diagnostics");
         match backend {
             Backend::Bacon => {
-                Bacon::publish_diagnostics(
-                    self.client.as_ref(),
-                    uri,
-                    &locations_file_name,
-                    workspace_folders.as_deref(),
-                )
-                .await;
+                Bacon::publish_diagnostics(&self.client, uri, &locations_file_name, workspace_folders.as_deref()).await;
             }
             Backend::Cargo => {
-                if let Some(client) = self.client.as_ref() {
-                    let token = ProgressToken::Number(version);
-                    let progress = client
-                        .progress(token, "running:")
-                        .with_message(format!("cargo {cargo_command}"))
-                        .with_percentage(0)
-                        .begin()
-                        .await;
+                let token = ProgressToken::Number(version);
+                let progress = self
+                    .client
+                    .progress(token, "running:")
+                    .with_message(format!("cargo {cargo_command}"))
+                    .with_percentage(0)
+                    .begin()
+                    .await;
 
-                    let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
-                    let cargo_future =
-                        Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
+                let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
+                let cargo_future =
+                    Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
 
-                    let result = tokio::select! {
-                        result = cargo_future => result,
-                        () = cancel_token.cancelled() => {
-                            tracing::info!("cargo run cancelled by newer request");
-                            progress.finish().await;
-                            return;
-                        }
-                    };
-
-                    let diagnostics = match result {
-                        Ok(diagnostics) => diagnostics,
-                        Err(error) => {
-                            tracing::error!(?error, "error building diagnostics");
-                            progress.finish().await;
-                            client.log_message(MessageType::ERROR, format!("{error}")).await;
-                            client.show_message(MessageType::ERROR, format!("{error}")).await;
-                            return;
-                        }
-                    };
-
-                    let mut state = self.state.write().await;
-                    // If it no longer has diagnostics we clear them
-                    let files_to_clear = state.files_with_diags.extract_if(|file| {
-                        // Just to be sure we do an empty vec check, but it's impossible to
-                        // happen I think
-                        diagnostics.get(file).is_none_or(|diags| diags.is_empty())
-                    });
-                    for file in files_to_clear {
-                        tracing::info!(uri = file.to_string(), "Cleaned diagnostics");
-                        client.publish_diagnostics(file, Vec::new(), Some(version)).await;
+                let result = tokio::select! {
+                    result = cargo_future => result,
+                    () = cancel_token.cancelled() => {
+                        tracing::info!("cargo run cancelled by newer request");
+                        progress.finish().await;
+                        return;
                     }
+                };
 
-                    for (uri, diagnostics) in diagnostics.into_iter() {
-                        tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
-                        // We cleared the files which no longer had diagnostics before
-                        // so now we are only adding files with diagnostics
-                        if !diagnostics.is_empty() {
-                            let _ = state.files_with_diags.insert(uri.clone());
-                            client.publish_diagnostics(uri, diagnostics, Some(version)).await;
-                        }
+                let diagnostics = match result {
+                    Ok(diagnostics) => diagnostics,
+                    Err(error) => {
+                        tracing::error!(?error, "error building diagnostics");
+                        progress.finish().await;
+                        self.client.log_message(MessageType::ERROR, format!("{error}")).await;
+                        self.client.show_message(MessageType::ERROR, format!("{error}")).await;
+                        return;
                     }
+                };
 
-                    progress.finish().await;
+                let mut state = self.state.write().await;
+                // If it no longer has diagnostics we clear them
+                let files_to_clear = state.files_with_diags.extract_if(|file| {
+                    // Just to be sure we do an empty vec check, but it's impossible to
+                    // happen I think
+                    diagnostics.get(file).is_none_or(|diags| diags.is_empty())
+                });
+                for file in files_to_clear {
+                    tracing::info!(uri = file.to_string(), "Cleaned diagnostics");
+                    self.client.publish_diagnostics(file, Vec::new(), Some(version)).await;
+                }
 
-                    if let PublishMode::QueueIfRunning(cargo_state) = &mut state.cargo.publish_mode {
-                        match cargo_state {
-                            CargoState::RunningPending => {
-                                *cargo_state = CargoState::Running;
-                                drop(state);
-                                tracing::info!("re-running cargo after queued request");
-                                Box::pin(self.publish_diagnostics(uri)).await;
-                            }
-                            _ => {
-                                *cargo_state = CargoState::Idle;
-                                drop(state);
-                            }
+                for (uri, diagnostics) in diagnostics.into_iter() {
+                    tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+                    // We cleared the files which no longer had diagnostics before
+                    // so now we are only adding files with diagnostics
+                    if !diagnostics.is_empty() {
+                        let _ = state.files_with_diags.insert(uri.clone());
+                        self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+                    }
+                }
+
+                progress.finish().await;
+
+                if let PublishMode::QueueIfRunning(cargo_state) = &mut state.cargo.publish_mode {
+                    match cargo_state {
+                        CargoState::RunningPending => {
+                            *cargo_state = CargoState::Running;
+                            drop(state);
+                            tracing::info!("re-running cargo after queued request");
+                            Box::pin(self.publish_diagnostics(uri)).await;
+                        }
+                        _ => {
+                            *cargo_state = CargoState::Idle;
+                            drop(state);
                         }
                     }
                 }
@@ -569,7 +559,7 @@ impl BaconLs {
         }
     }
 
-    async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
+    async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
         let backend = state.read().await.backend;
         if let Backend::Bacon = backend {
             Bacon::syncronize_diagnostics(state, client).await;
