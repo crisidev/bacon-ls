@@ -487,7 +487,7 @@ impl BaconLs {
                 let token = ProgressToken::Number(version);
                 let progress = self
                     .client
-                    .progress(token, "running:")
+                    .progress(token, "checking")
                     .with_message(format!("cargo {cargo_command}"))
                     .with_percentage(0)
                     .begin()
@@ -501,7 +501,7 @@ impl BaconLs {
                     result = cargo_future => result,
                     () = cancel_token.cancelled() => {
                         tracing::info!("cargo run cancelled by newer request");
-                        progress.finish().await;
+                        progress.finish_with_message("canceled by user").await;
                         return;
                     }
                 };
@@ -532,7 +532,7 @@ impl BaconLs {
                     self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                 }
 
-                progress.finish().await;
+                progress.finish_with_message("done").await;
 
                 if let PublishMode::QueueIfRunning(cargo_state) = &mut state.cargo.publish_mode {
                     match cargo_state {
