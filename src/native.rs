@@ -253,8 +253,10 @@ impl Cargo {
                     }
                     let trimmed = segment.trim_start();
                     if let Some((message, pct)) = parse_building_line(trimmed) {
+                        tracing::debug!(msg = message, pct = pct, "reported Building");
                         progress.report_with_message(message, pct).await;
                     } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
+                        tracing::debug!(msg = msg, "reported Blocking");
                         progress.report_with_message(msg.trim_start(), 0).await;
                     } else if let Some(msg) = trimmed.strip_prefix("error:") {
                         // This will catch things that looks like this

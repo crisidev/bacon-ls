@@ -81,7 +81,7 @@ impl LanguageServer for BaconLs {
         {
             state.build_folder = root.clone();
         }
-        tracing::debug!("loaded state from lsp settings: {state:#?}");
+        tracing::trace!("loaded state from lsp settings: {state:#?}");
         drop(state);
 
         Ok(InitializeResult {

@@ -402,7 +402,7 @@ impl BaconLs {
             return;
         };
 
-        tracing::info!("pulled configuration: {settings:#?}");
+        tracing::trace!("pulled configuration: {settings:#?}");
 
         let mut state = self.state.write().await;
         if let Some(values) = settings.as_object() {
@@ -437,7 +437,6 @@ impl BaconLs {
         {
             state.build_folder = root.clone();
         }
-        tracing::debug!("configuration after pull: {state:#?}");
     }
 
     async fn publish_diagnostics(&self, uri: &Uri) {
