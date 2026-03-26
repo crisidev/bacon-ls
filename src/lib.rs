@@ -506,7 +506,7 @@ impl BaconLs {
                     }
                 };
 
-                let diagnostics = match result {
+                let mut diagnostics = match result {
                     Ok(diagnostics) => diagnostics,
                     Err(error) => {
                         tracing::error!(?error, "error building diagnostics");
@@ -518,25 +518,18 @@ impl BaconLs {
                 };
 
                 let mut state = self.state.write().await;
-                // If it no longer has diagnostics we clear them
-                let files_to_clear = state.files_with_diags.extract_if(|file| {
-                    // Just to be sure we do an empty vec check, but it's impossible to
-                    // happen I think
-                    diagnostics.get(file).is_none_or(|diags| diags.is_empty())
-                });
-                for file in files_to_clear {
-                    tracing::info!(uri = file.to_string(), "Cleaned diagnostics");
-                    self.client.publish_diagnostics(file, Vec::new(), Some(version)).await;
+                for file in state.files_with_diags.drain() {
+                    // push an empty diagnostics vec for files which previously had diagnostics
+                    // but no longer has now
+                    let _ = diagnostics.entry(file).or_insert(vec![]);
                 }
 
                 for (uri, diagnostics) in diagnostics.into_iter() {
                     tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
-                    // We cleared the files which no longer had diagnostics before
-                    // so now we are only adding files with diagnostics
                     if !diagnostics.is_empty() {
                         let _ = state.files_with_diags.insert(uri.clone());
-                        self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                     }
+                    self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                 }
 
                 progress.finish().await;
