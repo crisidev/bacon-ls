@@ -8,10 +8,35 @@ use std::{
 use anyhow::Context;
 use ls_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
 use serde::{Deserialize, Deserializer};
-use tokio::{io::AsyncBufReadExt, process::Command};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::process::Command;
 use tower_lsp_server::{Bounded, NotCancellable, OngoingProgress};
 
 use crate::{DiagnosticData, PKG_NAME};
+
+/// Like `read_until` but stops at either `\r` or `\n`.
+/// Returns the number of bytes read (0 = EOF).
+/// The delimiter byte is consumed but not included in `buf`.
+async fn read_until_cr_or_lf<R: AsyncBufRead + Unpin>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+    let mut total = 0;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(total);
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\r' || b == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            let consumed = pos + 1;
+            total += consumed;
+            reader.consume(consumed);
+            return Ok(total);
+        }
+        buf.extend_from_slice(available);
+        let len = available.len();
+        total += len;
+        reader.consume(len);
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct CargoSpan {
@@ -239,33 +264,38 @@ impl Cargo {
 
         let stderr_future = async {
             let mut errors = String::new();
-            let mut reader = tokio::io::BufReader::new(stderr).lines();
-            while let Some(line) = reader.next_line().await? {
-                // cargo uses `\r` to keep the progress bar on one line
-                // so we resplit on it to make sure we don't miss an update
-                for segment in line.split('\r') {
-                    let segment = segment.trim();
-                    if segment.is_empty() {
-                        continue;
-                    }
-                    if log_cargo != "off" {
-                        tracing::info!("[cargo stderr]{segment}");
-                    }
-                    let trimmed = segment.trim_start();
-                    if let Some((message, pct)) = parse_building_line(trimmed) {
-                        tracing::debug!(msg = message, pct = pct, "reported Building");
-                        progress.report_with_message(message, pct).await;
-                    } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
-                        tracing::debug!(msg = msg, "reported Blocking");
-                        progress.report_with_message(msg.trim_start(), 0).await;
-                    } else if let Some(msg) = trimmed.strip_prefix("error:") {
-                        // This will catch things that looks like this
-                        // 1) `error: no such command: `fake`
-                        // 2) `error: expected `;`, found keyword `let`
-                        //
-                        // However we are only really interested in the `1)`
-                        errors.push_str(msg);
-                    }
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut buf = Vec::new();
+            // Read until \r or \n so cargo progress updates arrive immediately
+            // instead of being buffered until the next \n
+            loop {
+                buf.clear();
+                let bytes_read = read_until_cr_or_lf(&mut reader, &mut buf).await?;
+                if bytes_read == 0 {
+                    break;
+                }
+                let segment = String::from_utf8_lossy(&buf);
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    continue;
+                }
+                if log_cargo != "off" {
+                    tracing::info!("[cargo stderr]{segment}");
+                }
+                let trimmed = segment.trim_start();
+                if let Some((message, pct)) = parse_building_line(trimmed) {
+                    tracing::debug!(msg = message, pct = pct, "reported Building");
+                    progress.report_with_message(message, pct).await;
+                } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
+                    tracing::debug!(msg = msg, "reported Blocking");
+                    progress.report_with_message(msg.trim_start(), 0).await;
+                } else if let Some(msg) = trimmed.strip_prefix("error:") {
+                    // This will catch things that looks like this
+                    // 1) `error: no such command: `fake`
+                    // 2) `error: expected `;`, found keyword `let`
+                    //
+                    // However we are only really interested in the `1)`
+                    errors.push_str(msg);
                 }
             }
             anyhow::Ok(errors)
