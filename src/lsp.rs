@@ -10,7 +10,7 @@ use ls_types::{
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
-use crate::{BackendRuntime, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{BackendChoice, BackendRuntime, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -102,6 +102,10 @@ impl LanguageServer for BaconLs {
             .await;
 
         tracing::info!("initialized complete");
+
+        if backend_chosen == BackendChoice::Cargo {
+            self.publish_cargo_diagnostics().await
+        }
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
