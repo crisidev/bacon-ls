@@ -611,131 +611,129 @@ impl BaconLs {
         }
     }
 
-    async fn publish_diagnostics(&self, uri: &Uri) {
+    async fn publish_cargo_diagnostics(&self) {
         let mut guard = self.state.write().await;
-        let workspace_folders = guard.workspace_folders.clone();
         let project_root = guard.project_root.clone();
 
-        let Some(backend) = &mut guard.backend else {
+        let Some(BackendRuntime::Cargo { config, runtime }) = &mut guard.backend else {
             return;
         };
+        let cargo_command = config.command.clone();
+        let cargo_env = config.env.clone();
+        let cmd_args = config.build_command_args();
+        let publish_mode = config.publish_mode;
+        let build_folder = runtime.build_folder.clone();
+        runtime.diagnostics_version += 1;
+        let version = runtime.diagnostics_version;
 
-        tracing::info!(uri = uri.to_string(), "publish diagnostics");
-        match backend {
-            BackendRuntime::Bacon { config, .. } => {
-                let locations_file_name = config.locations_file.clone();
-                drop(guard);
-                Bacon::publish_diagnostics(&self.client, uri, &locations_file_name, workspace_folders.as_deref()).await;
+        let cancel_token = match publish_mode {
+            PublishMode::CancelRunning => {
+                runtime.cancel_token.cancel();
+                runtime.cancel_token = CancellationToken::new();
+                runtime.cancel_token.clone()
             }
-            BackendRuntime::Cargo {
-                config,
-                runtime: cargo_rt,
-            } => {
-                let cargo_command = config.command.clone();
-                let cargo_env = config.env.clone();
-                let cmd_args = config.build_command_args();
-                let publish_mode = config.publish_mode;
-                let build_folder = cargo_rt.build_folder.clone();
-                cargo_rt.diagnostics_version += 1;
-                let version = cargo_rt.diagnostics_version;
-
-                let cancel_token = match publish_mode {
-                    PublishMode::CancelRunning => {
-                        cargo_rt.cancel_token.cancel();
-                        cargo_rt.cancel_token = CancellationToken::new();
-                        cargo_rt.cancel_token.clone()
-                    }
-                    PublishMode::QueueIfRunning => match cargo_rt.run_state {
-                        CargoRunState::Running | CargoRunState::RunningPending => {
-                            cargo_rt.run_state = CargoRunState::RunningPending;
-                            tracing::debug!("cargo already running, marking pending");
-                            drop(guard);
-                            return;
-                        }
-                        CargoRunState::Idle => {
-                            cargo_rt.run_state = CargoRunState::Running;
-                            cargo_rt.cancel_token.clone()
-                        }
-                    },
-                };
-                drop(guard);
-
-                let token = ProgressToken::Number(version);
-                let progress = self
-                    .client
-                    .progress(token, "checking")
-                    .with_message(format!("cargo {cargo_command}"))
-                    .with_percentage(0)
-                    .begin()
-                    .await;
-
-                let cargo_future =
-                    Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
-
-                let result = tokio::select! {
-                    result = cargo_future => result,
-                    () = cancel_token.cancelled() => {
-                        tracing::info!("cargo run cancelled by newer request");
-                        progress.finish_with_message("canceled by user").await;
-                        return;
-                    }
-                };
-
-                let mut diagnostics = match result {
-                    Ok(diagnostics) => diagnostics,
-                    Err(error) => {
-                        tracing::error!(?error, "error building diagnostics");
-                        progress.finish().await;
-                        self.client.log_message(MessageType::ERROR, format!("{error}")).await;
-                        self.client.show_message(MessageType::ERROR, format!("{error}")).await;
-                        return;
-                    }
-                };
-
-                let mut state = self.state.write().await;
-                let Some(BackendRuntime::Cargo {
-                    config,
-                    runtime: cargo_rt,
-                }) = &mut state.backend
-                else {
-                    tracing::warn!("backend changed during cargo run, discarding results");
-                    progress
-                        .finish_with_message("backend switched, diagnostics discarded")
-                        .await;
+            PublishMode::QueueIfRunning => match runtime.run_state {
+                CargoRunState::Running | CargoRunState::RunningPending => {
+                    runtime.run_state = CargoRunState::RunningPending;
+                    tracing::debug!("cargo already running, marking pending");
+                    drop(guard);
                     return;
-                };
-                let publish_mode = config.publish_mode;
-
-                for file in cargo_rt.files_with_diags.drain() {
-                    let _ = diagnostics.entry(file).or_insert(vec![]);
                 }
-
-                for (uri, diagnostics) in diagnostics.into_iter() {
-                    tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
-                    if !diagnostics.is_empty() {
-                        let _ = cargo_rt.files_with_diags.insert(uri.clone());
-                    }
-                    self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+                CargoRunState::Idle => {
+                    runtime.run_state = CargoRunState::Running;
+                    runtime.cancel_token.clone()
                 }
+            },
+        };
+        drop(guard);
 
-                progress.finish_with_message("done").await;
+        let token = ProgressToken::Number(version);
+        let progress = self
+            .client
+            .progress(token, "checking")
+            .with_message(format!("cargo {cargo_command}"))
+            .with_percentage(0)
+            .begin()
+            .await;
 
-                if let PublishMode::QueueIfRunning = publish_mode {
-                    match cargo_rt.run_state {
-                        CargoRunState::RunningPending => {
-                            cargo_rt.run_state = CargoRunState::Running;
-                            drop(state);
-                            tracing::info!("re-running cargo after queued request");
-                            Box::pin(self.publish_diagnostics(uri)).await;
-                        }
-                        _ => {
-                            cargo_rt.run_state = CargoRunState::Idle;
-                            drop(state);
-                        }
-                    }
+        let cargo_future =
+            Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
+
+        let result = tokio::select! {
+            result = cargo_future => result,
+            () = cancel_token.cancelled() => {
+                tracing::info!("cargo run cancelled by newer request");
+                progress.finish_with_message("canceled by user").await;
+                return;
+            }
+        };
+
+        let mut diagnostics = match result {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                tracing::error!(?error, "error building diagnostics");
+                progress.finish().await;
+                self.client.log_message(MessageType::ERROR, format!("{error}")).await;
+                self.client.show_message(MessageType::ERROR, format!("{error}")).await;
+                return;
+            }
+        };
+
+        let mut state = self.state.write().await;
+        let Some(BackendRuntime::Cargo {
+            config,
+            runtime: cargo_rt,
+        }) = &mut state.backend
+        else {
+            tracing::warn!("backend changed during cargo run, discarding results");
+            progress
+                .finish_with_message("backend switched, diagnostics discarded")
+                .await;
+            return;
+        };
+        let publish_mode = config.publish_mode;
+
+        for file in cargo_rt.files_with_diags.drain() {
+            let _ = diagnostics.entry(file).or_insert(vec![]);
+        }
+
+        for (uri, diagnostics) in diagnostics.into_iter() {
+            tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+            if !diagnostics.is_empty() {
+                let _ = cargo_rt.files_with_diags.insert(uri.clone());
+            }
+            self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+        }
+
+        progress.finish_with_message("done").await;
+
+        if let PublishMode::QueueIfRunning = publish_mode {
+            match cargo_rt.run_state {
+                CargoRunState::RunningPending => {
+                    cargo_rt.run_state = CargoRunState::Running;
+                    drop(state);
+                    tracing::info!("re-running cargo after queued request");
+                    Box::pin(self.publish_cargo_diagnostics()).await;
+                }
+                _ => {
+                    cargo_rt.run_state = CargoRunState::Idle;
+                    drop(state);
                 }
             }
         }
+    }
+
+    async fn publish_bacon_diagnostics(&self, uri: &Uri) {
+        let mut guard = self.state.write().await;
+        let workspace_folders = guard.workspace_folders.clone();
+
+        let Some(BackendRuntime::Bacon { config, .. }) = &mut guard.backend else {
+            return;
+        };
+        tracing::info!(uri = uri.to_string(), "publish bacon diagnostics");
+        let locations_file_name = config.locations_file.clone();
+        drop(guard);
+        Bacon::publish_diagnostics(&self.client, uri, &locations_file_name, workspace_folders.as_deref()).await;
     }
 
     async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {

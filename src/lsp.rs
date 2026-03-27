@@ -123,7 +123,7 @@ impl LanguageServer for BaconLs {
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
             runtime.open_files.insert(params.text_document.uri.clone());
             drop(state);
-            self.publish_diagnostics(&params.text_document.uri).await;
+            self.publish_bacon_diagnostics(&params.text_document.uri).await;
         }
     }
 
@@ -133,29 +133,30 @@ impl LanguageServer for BaconLs {
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
             runtime.open_files.remove(&params.text_document.uri);
             drop(state);
-            self.publish_diagnostics(&params.text_document.uri).await;
+            self.publish_bacon_diagnostics(&params.text_document.uri).await;
         }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        tracing::debug!("client sent didSave request");
         let state = self.state.read().await;
         let Some(backend) = &state.backend else {
             return;
         };
-        let (update_on_save, wait) = match backend {
-            BackendRuntime::Bacon { config, .. } => (config.update_on_save, config.update_on_save_wait),
-            BackendRuntime::Cargo { .. } => (true, std::time::Duration::ZERO),
-        };
-        drop(state);
-        tracing::debug!(
-            "client sent didSave request, updateOnSave is {update_on_save} for {:?} after {wait:?}",
-            params.text_document.uri
-        );
-        if update_on_save {
-            if !wait.is_zero() {
-                tokio::time::sleep(wait).await;
+        match backend {
+            BackendRuntime::Bacon { config, .. } => {
+                if config.update_on_save {
+                    if !config.update_on_save_wait.is_zero() {
+                        tokio::time::sleep(config.update_on_save_wait).await;
+                    }
+                    drop(state);
+                    self.publish_bacon_diagnostics(&params.text_document.uri).await;
+                }
             }
-            self.publish_diagnostics(&params.text_document.uri).await;
+            BackendRuntime::Cargo { .. } => {
+                drop(state);
+                self.publish_cargo_diagnostics().await;
+            }
         }
     }
 
@@ -191,7 +192,7 @@ impl LanguageServer for BaconLs {
                     runtime.open_files.insert(new_uri.clone());
                 }
                 drop(state);
-                self.publish_diagnostics(&new_uri).await;
+                self.publish_bacon_diagnostics(&new_uri).await;
             }
         }
     }
