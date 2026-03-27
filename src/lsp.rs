@@ -114,9 +114,9 @@ impl LanguageServer for BaconLs {
         let mut state = self.state.write().await;
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
             runtime.open_files.insert(params.text_document.uri.clone());
+            drop(state);
+            self.publish_diagnostics(&params.text_document.uri).await;
         }
-        drop(state);
-        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -124,9 +124,9 @@ impl LanguageServer for BaconLs {
         let mut state = self.state.write().await;
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
             runtime.open_files.remove(&params.text_document.uri);
+            drop(state);
+            self.publish_diagnostics(&params.text_document.uri).await;
         }
-        drop(state);
-        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -169,6 +169,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
+        tracing::debug!("client sent didRenameFiles request for {:?}", params.files);
         for file in params.files {
             tracing::debug!(
                 "client sent didRenameFiles request {} -> {}",
