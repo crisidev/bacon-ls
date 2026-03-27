@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-    CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities,
-    ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    CodeActionResponse, DeleteFilesParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
+    InitializeResult, InitializedParams, MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -104,9 +104,17 @@ impl LanguageServer for BaconLs {
         tracing::info!("initialized complete");
     }
 
-    async fn did_change_configuration(&self, _params: ls_types::DidChangeConfigurationParams) {
-        tracing::info!("client sent didChangeConfiguration, pulling configuration");
-        self.pull_configuration().await;
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        tracing::info!("client sent didChangeConfiguration");
+        if let Some(settings) = params.settings.as_object()
+            && !settings.is_empty()
+        {
+            tracing::info!("using client provided settings");
+            self.adapt_to_settings(params.settings).await;
+        } else {
+            tracing::info!("settings is either not an object or is empty");
+            self.pull_configuration().await;
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {

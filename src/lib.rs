@@ -448,7 +448,10 @@ impl BaconLs {
         };
 
         tracing::trace!("pulled configuration: {settings:#?}");
+        self.adapt_to_settings(settings).await;
+    }
 
+    async fn adapt_to_settings(&self, settings: Value) {
         let mut state = self.state.write().await;
         let Some(values) = settings.as_object() else {
             tracing::warn!("configuration is not a JSON object");
