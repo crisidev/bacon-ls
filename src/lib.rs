@@ -35,23 +35,44 @@ pub struct Args {
     pub version: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Backend {
-    Bacon,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendChoice {
     Cargo,
+    Bacon,
+}
+
+#[derive(Debug)]
+enum BackendRuntime {
+    Bacon {
+        config: BaconOptions,
+        runtime: BaconRuntime,
+    },
+    Cargo {
+        config: CargoOptions,
+        runtime: CargoRuntime,
+    },
+}
+
+impl BackendRuntime {
+    fn backend_choice(&self) -> BackendChoice {
+        match self {
+            Self::Bacon { .. } => BackendChoice::Bacon,
+            Self::Cargo { .. } => BackendChoice::Cargo,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CargoState {
+pub(crate) enum CargoRunState {
     Idle,
     Running,
     RunningPending,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) enum PublishMode {
     CancelRunning,
-    QueueIfRunning(CargoState),
+    QueueIfRunning,
 }
 
 #[derive(Debug)]
@@ -159,7 +180,7 @@ impl CargoOptions {
             self.publish_mode = if cancel {
                 PublishMode::CancelRunning
             } else {
-                PublishMode::QueueIfRunning(CargoState::Idle)
+                PublishMode::QueueIfRunning
             };
         }
 
@@ -273,40 +294,41 @@ impl Default for BaconOptions {
 }
 
 #[derive(Debug)]
+pub(crate) struct CargoRuntime {
+    cancel_token: CancellationToken,
+    run_state: CargoRunState,
+    files_with_diags: HashSet<Uri>,
+    diagnostics_version: i32,
+    build_folder: PathBuf,
+}
+
+impl Default for CargoRuntime {
+    fn default() -> Self {
+        Self {
+            cancel_token: CancellationToken::new(),
+            run_state: CargoRunState::Idle,
+            files_with_diags: HashSet::new(),
+            diagnostics_version: 0,
+            build_folder: PathBuf::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct BaconRuntime {
+    pub(crate) shutdown_token: CancellationToken,
+    pub(crate) open_files: HashSet<Uri>,
+    // Some(..) if we have to run bacon in the background ourselves
+    pub(crate) command_handle: Option<JoinHandle<()>>,
+    pub(crate) sync_files_handle: JoinHandle<()>,
+}
+
+#[derive(Debug, Default)]
 struct State {
     project_root: Option<PathBuf>,
     workspace_folders: Option<Vec<WorkspaceFolder>>,
-    bacon_command_handle: Option<JoinHandle<()>>,
     diagnostics_data_supported: bool,
-    cancel_token: CancellationToken,
-    sync_files_handle: Option<JoinHandle<()>>,
-    open_files: HashSet<Uri>,
-    files_with_diags: HashSet<Uri>,
-    backend: Backend,
-    diagnostics_version: i32,
-    build_folder: PathBuf,
-    cargo: CargoOptions,
-    bacon: BaconOptions,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            project_root: None,
-            workspace_folders: None,
-            bacon_command_handle: None,
-            diagnostics_data_supported: false,
-            open_files: HashSet::new(),
-            cancel_token: CancellationToken::new(),
-            sync_files_handle: None,
-            backend: Backend::Cargo,
-            diagnostics_version: 0,
-            build_folder: tempfile::tempdir().unwrap().path().into(),
-            cargo: CargoOptions::default(),
-            bacon: BaconOptions::default(),
-            files_with_diags: HashSet::new(),
-        }
-    }
+    backend: Option<BackendRuntime>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -379,6 +401,29 @@ impl BaconLs {
         }
     }
 
+    fn detect_backend(values: &Map<String, Value>) -> Result<BackendChoice, String> {
+        if let Some(value) = values.get("backend") {
+            let backend = value.as_str().ok_or("'backend' must be a string")?;
+            match backend {
+                "cargo" => Ok(BackendChoice::Cargo),
+                "bacon" => Ok(BackendChoice::Bacon),
+                other => Err(format!("Invalid backend value '{other}'. Must be 'cargo' or 'bacon'.")),
+            }
+        } else {
+            let has_cargo = values.get("cargo").and_then(|v| v.as_object()).is_some();
+            let has_bacon = values.get("bacon").and_then(|v| v.as_object()).is_some();
+            match (has_cargo, has_bacon) {
+                (true, true) => Err(
+                    "Both 'cargo' and 'bacon' config sections present without a 'backend' key. \
+                     Set 'backend' to 'cargo' or 'bacon'."
+                        .to_string(),
+                ),
+                (_, true) => Ok(BackendChoice::Bacon),
+                _ => Ok(BackendChoice::Cargo),
+            }
+        }
+    }
+
     async fn pull_configuration(&self) {
         tracing::info!("pull_configuration");
 
@@ -405,84 +450,213 @@ impl BaconLs {
         tracing::trace!("pulled configuration: {settings:#?}");
 
         let mut state = self.state.write().await;
-        if let Some(values) = settings.as_object() {
-            if let Some(value) = values.get("useBaconBackend")
-                && let Some(use_bacon) = value.as_bool()
-            {
-                state.backend = if use_bacon { Backend::Bacon } else { Backend::Cargo };
-            }
+        let Some(values) = settings.as_object() else {
+            tracing::warn!("configuration is not a JSON object");
+            return;
+        };
 
-            if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object()) {
-                state.cargo.reset();
-                if let Err(e) = state.cargo.update_from_json_obj(cargo_obj) {
-                    tracing::error!("invalid cargo configuration: {e}");
-                    self.client
-                        .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
-                        .await;
+        if state.backend.is_none() {
+            let backend_choice = match Self::detect_backend(values) {
+                Ok(choice) => choice,
+                Err(msg) => {
+                    tracing::error!("{msg}");
+                    self.client.show_message(MessageType::ERROR, &msg).await;
+                    return;
+                }
+            };
+
+            match backend_choice {
+                BackendChoice::Bacon => {
+                    let mut config = BaconOptions::default();
+                    if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
+                        && let Err(e) = config.update_from_json_obj(bacon_obj)
+                    {
+                        tracing::error!("invalid bacon configuration: {e}");
+                        self.client
+                            .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
+                            .await;
+                    }
+
+                    if config.validate_preferences {
+                        if let Err(e) = Bacon::validate_preferences(
+                            &config.run_in_background_command,
+                            config.create_preferences_file,
+                        )
+                        .await
+                        {
+                            tracing::error!("{e}");
+                            self.client.show_message(MessageType::ERROR, e).await;
+                        }
+                    } else {
+                        tracing::warn!("skipping validation of bacon preferences, validateBaconPreferences is false");
+                    }
+
+                    let proj_root = state.project_root.clone();
+                    let shutdown_token = CancellationToken::new();
+                    let command_handle = if config.run_in_background {
+                        let mut current_dir = None;
+                        if let Ok(cwd) = env::current_dir() {
+                            current_dir = Self::find_git_root_directory(&cwd).await;
+                            if let Some(dir) = &current_dir {
+                                if !dir.join("Cargo.toml").exists() {
+                                    current_dir = proj_root;
+                                }
+                            } else {
+                                current_dir = proj_root;
+                            }
+                        }
+
+                        match Bacon::run_in_background(
+                            &config.run_in_background_command,
+                            &config.run_in_background_command_args,
+                            current_dir.as_ref(),
+                            shutdown_token.clone(),
+                        )
+                        .await
+                        {
+                            Ok(command) => {
+                                tracing::info!("bacon was started successfully and is running in the background");
+                                Some(command)
+                            }
+                            Err(e) => {
+                                tracing::error!("{e}");
+                                self.client.show_message(MessageType::ERROR, e).await;
+                                None
+                            }
+                        }
+                    } else {
+                        tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
+                        None
+                    };
+
+                    let task_state = self.state.clone();
+                    let task_client = self.client.clone();
+                    state.backend = Some(BackendRuntime::Bacon {
+                        config,
+                        runtime: BaconRuntime {
+                            shutdown_token,
+                            open_files: HashSet::new(),
+                            command_handle,
+                            sync_files_handle: tokio::task::spawn(Self::syncronize_diagnostics(
+                                task_state,
+                                task_client,
+                            )),
+                        },
+                    });
+                }
+                BackendChoice::Cargo => {
+                    let mut config = CargoOptions::default();
+                    if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
+                        && let Err(e) = config.update_from_json_obj(cargo_obj)
+                    {
+                        tracing::error!("invalid cargo configuration: {e}");
+                        self.client
+                            .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
+                            .await;
+                    }
+                    let mut runtime = CargoRuntime::default();
+                    if let Some(root) = &state.project_root {
+                        runtime.build_folder = root.clone();
+                    }
+                    state.backend = Some(BackendRuntime::Cargo { config, runtime });
                 }
             }
+        } else {
+            let current_choice = match &state.backend {
+                Some(BackendRuntime::Bacon { .. }) => BackendChoice::Bacon,
+                Some(BackendRuntime::Cargo { .. }) => BackendChoice::Cargo,
+                None => unreachable!("backend is Some in this branch"),
+            };
+            let desired = Self::detect_backend(values).unwrap_or(current_choice);
 
-            if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
-                && let Err(e) = state.bacon.update_from_json_obj(bacon_obj)
-            {
-                tracing::error!("invalid bacon configuration: {e}");
-                self.client
-                    .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
-                    .await;
+            if desired != current_choice {
+                let msg = "Backend cannot be changed while the server is running. \
+                           Restart the server to switch backends.";
+                tracing::error!("{msg}");
+                self.client.show_message(MessageType::ERROR, msg).await;
+                return;
             }
-        }
 
-        if let Backend::Cargo = state.backend
-            && let Some(root) = &state.project_root
-        {
-            state.build_folder = root.clone();
+            let project_root = state.project_root.clone();
+            match &mut state.backend {
+                Some(BackendRuntime::Cargo { config, runtime }) => {
+                    config.reset();
+                    if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
+                        && let Err(e) = config.update_from_json_obj(cargo_obj)
+                    {
+                        tracing::error!("invalid cargo configuration: {e}");
+                        self.client
+                            .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
+                            .await;
+                    }
+                    if let Some(root) = project_root {
+                        runtime.build_folder = root;
+                    }
+                }
+                Some(BackendRuntime::Bacon { config, .. }) => {
+                    if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
+                        && let Err(e) = config.update_from_json_obj(bacon_obj)
+                    {
+                        tracing::error!("invalid bacon configuration: {e}");
+                        self.client
+                            .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
+                            .await;
+                    }
+                }
+                None => unreachable!("backend is Some in this branch"),
+            }
         }
     }
 
     async fn publish_diagnostics(&self, uri: &Uri) {
         let mut guard = self.state.write().await;
-        let locations_file_name = guard.bacon.locations_file.clone();
         let workspace_folders = guard.workspace_folders.clone();
-        let backend = guard.backend;
-        let cargo_command = guard.cargo.command.clone();
-        let cargo_env = guard.cargo.env.clone();
         let project_root = guard.project_root.clone();
-        let build_folder = guard.build_folder.clone();
-        let cmd_args = guard.cargo.build_command_args();
-        guard.diagnostics_version += 1;
-        let version = guard.diagnostics_version;
 
-        let cancel_token = if let Backend::Cargo = backend {
-            match &mut guard.cargo.publish_mode {
-                PublishMode::CancelRunning => {
-                    guard.cancel_token.cancel();
-                    guard.cancel_token = CancellationToken::new();
-                    Some(guard.cancel_token.clone())
-                }
-                PublishMode::QueueIfRunning(cargo_state) => match cargo_state {
-                    CargoState::Running | CargoState::RunningPending => {
-                        *cargo_state = CargoState::RunningPending;
-                        tracing::debug!("cargo already running, marking pending");
-                        drop(guard);
-                        return;
-                    }
-                    CargoState::Idle => {
-                        *cargo_state = CargoState::Running;
-                        Some(guard.cancel_token.clone())
-                    }
-                },
-            }
-        } else {
-            None
+        let Some(backend) = &mut guard.backend else {
+            return;
         };
-        drop(guard);
 
         tracing::info!(uri = uri.to_string(), "publish diagnostics");
         match backend {
-            Backend::Bacon => {
+            BackendRuntime::Bacon { config, .. } => {
+                let locations_file_name = config.locations_file.clone();
+                drop(guard);
                 Bacon::publish_diagnostics(&self.client, uri, &locations_file_name, workspace_folders.as_deref()).await;
             }
-            Backend::Cargo => {
+            BackendRuntime::Cargo {
+                config,
+                runtime: cargo_rt,
+            } => {
+                let cargo_command = config.command.clone();
+                let cargo_env = config.env.clone();
+                let cmd_args = config.build_command_args();
+                let publish_mode = config.publish_mode;
+                let build_folder = cargo_rt.build_folder.clone();
+                cargo_rt.diagnostics_version += 1;
+                let version = cargo_rt.diagnostics_version;
+
+                let cancel_token = match publish_mode {
+                    PublishMode::CancelRunning => {
+                        cargo_rt.cancel_token.cancel();
+                        cargo_rt.cancel_token = CancellationToken::new();
+                        cargo_rt.cancel_token.clone()
+                    }
+                    PublishMode::QueueIfRunning => match cargo_rt.run_state {
+                        CargoRunState::Running | CargoRunState::RunningPending => {
+                            cargo_rt.run_state = CargoRunState::RunningPending;
+                            tracing::debug!("cargo already running, marking pending");
+                            drop(guard);
+                            return;
+                        }
+                        CargoRunState::Idle => {
+                            cargo_rt.run_state = CargoRunState::Running;
+                            cargo_rt.cancel_token.clone()
+                        }
+                    },
+                };
+                drop(guard);
+
                 let token = ProgressToken::Number(version);
                 let progress = self
                     .client
@@ -492,7 +666,6 @@ impl BaconLs {
                     .begin()
                     .await;
 
-                let cancel_token = cancel_token.expect("cancel_token set for Cargo backend");
                 let cargo_future =
                     Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
 
@@ -517,32 +690,43 @@ impl BaconLs {
                 };
 
                 let mut state = self.state.write().await;
-                for file in state.files_with_diags.drain() {
-                    // push an empty diagnostics vec for files which previously had diagnostics
-                    // but no longer has now
+                let Some(BackendRuntime::Cargo {
+                    config,
+                    runtime: cargo_rt,
+                }) = &mut state.backend
+                else {
+                    tracing::warn!("backend changed during cargo run, discarding results");
+                    progress
+                        .finish_with_message("backend switched, diagnostics discarded")
+                        .await;
+                    return;
+                };
+                let publish_mode = config.publish_mode;
+
+                for file in cargo_rt.files_with_diags.drain() {
                     let _ = diagnostics.entry(file).or_insert(vec![]);
                 }
 
                 for (uri, diagnostics) in diagnostics.into_iter() {
                     tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
                     if !diagnostics.is_empty() {
-                        let _ = state.files_with_diags.insert(uri.clone());
+                        let _ = cargo_rt.files_with_diags.insert(uri.clone());
                     }
                     self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                 }
 
                 progress.finish_with_message("done").await;
 
-                if let PublishMode::QueueIfRunning(cargo_state) = &mut state.cargo.publish_mode {
-                    match cargo_state {
-                        CargoState::RunningPending => {
-                            *cargo_state = CargoState::Running;
+                if let PublishMode::QueueIfRunning = publish_mode {
+                    match cargo_rt.run_state {
+                        CargoRunState::RunningPending => {
+                            cargo_rt.run_state = CargoRunState::Running;
                             drop(state);
                             tracing::info!("re-running cargo after queued request");
                             Box::pin(self.publish_diagnostics(uri)).await;
                         }
                         _ => {
-                            *cargo_state = CargoState::Idle;
+                            cargo_rt.run_state = CargoRunState::Idle;
                             drop(state);
                         }
                     }
@@ -552,10 +736,7 @@ impl BaconLs {
     }
 
     async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
-        let backend = state.read().await.backend;
-        if let Backend::Bacon = backend {
-            Bacon::syncronize_diagnostics(state, client).await;
-        }
+        Bacon::syncronize_diagnostics(state, client).await;
     }
 }
 
@@ -576,5 +757,54 @@ mod tests {
         assert!(original.is_cancelled());
         let new_token = CancellationToken::new();
         assert!(!new_token.is_cancelled());
+    }
+
+    #[test]
+    fn test_detect_backend_explicit_cargo() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"backend": "cargo"}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Cargo);
+    }
+
+    #[test]
+    fn test_detect_backend_explicit_bacon() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"backend": "bacon"}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Bacon);
+    }
+
+    #[test]
+    fn test_detect_backend_invalid_value() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"backend": "invalid"}"#).unwrap();
+        assert!(BaconLs::detect_backend(&values).is_err());
+    }
+
+    #[test]
+    fn test_detect_backend_infer_from_cargo_key() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"cargo": {"command": "check"}}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Cargo);
+    }
+
+    #[test]
+    fn test_detect_backend_infer_from_bacon_key() {
+        let values: Map<String, Value> =
+            serde_json::from_str(r#"{"bacon": {"locationsFile": ".bacon-locations"}}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Bacon);
+    }
+
+    #[test]
+    fn test_detect_backend_both_keys_error() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"cargo": {}, "bacon": {}}"#).unwrap();
+        assert!(BaconLs::detect_backend(&values).is_err());
+    }
+
+    #[test]
+    fn test_detect_backend_no_keys_defaults_to_cargo() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Cargo);
+    }
+
+    #[test]
+    fn test_detect_backend_explicit_overrides_keys() {
+        let values: Map<String, Value> = serde_json::from_str(r#"{"backend": "cargo", "bacon": {}}"#).unwrap();
+        assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Cargo);
     }
 }

@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::Client;
 
-use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
+use crate::{BackendRuntime, BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -432,13 +432,17 @@ impl Bacon {
         tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
-        let (locations_file, proj_root, wait_time, cancel_token) = {
+        let (locations_file, proj_root, wait_time, shutdown_token) = {
             let state = state.read().await;
+            let Some(BackendRuntime::Bacon { config, runtime }) = &state.backend else {
+                tracing::error!("syncronize_diagnostics called without bacon backend");
+                return;
+            };
             (
-                state.bacon.locations_file.clone(),
+                config.locations_file.clone(),
                 state.project_root.clone(),
-                state.bacon.synchronize_all_open_files_wait,
-                state.cancel_token.clone(),
+                config.synchronize_all_open_files_wait,
+                runtime.shutdown_token.clone(),
             )
         };
 
@@ -471,7 +475,7 @@ impl Bacon {
             ev = rx.recv_async() => {
                 Some(ev)
             }
-            _ = cancel_token.cancelled() => {
+            _ = shutdown_token.cancelled() => {
                 None
             }
         } {
@@ -488,7 +492,11 @@ impl Bacon {
             }
 
             let loop_state = state.read().await;
-            let open_files = loop_state.open_files.clone();
+            let Some(BackendRuntime::Bacon { runtime, .. }) = &loop_state.backend else {
+                tracing::error!("backend changed during sync loop");
+                return;
+            };
+            let open_files = runtime.open_files.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
             drop(loop_state);
             tracing::debug!(
