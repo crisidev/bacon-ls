@@ -156,16 +156,16 @@ impl LanguageServer for BaconLs {
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
-        for file in params.files {
-            tracing::debug!("client sent didDeleteFiles request for {}", file.uri);
-            if let Ok(uri) = str::parse::<Uri>(&file.uri) {
-                let mut state = self.state.write().await;
-                if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+        tracing::debug!("client sent didDeleteFiles request for {:?}", params.files);
+        let mut state = self.state.write().await;
+        if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+            for file in params.files {
+                if let Ok(uri) = str::parse::<Uri>(&file.uri) {
                     runtime.open_files.remove(&uri);
                 }
-                drop(state);
             }
         }
+        drop(state);
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
