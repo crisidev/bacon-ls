@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env,
     path::{Path, PathBuf},
     process::Stdio,
@@ -115,13 +114,13 @@ impl Cargo {
         }
     }
 
-    fn maybe_add_diagnostic(
+    async fn maybe_add_diagnostic(
         project_root: Option<&PathBuf>,
         severity: &str,
         message: &str,
         span: &CargoSpan,
-        diagnostics: &mut HashMap<Uri, Vec<Diagnostic>>,
-    ) -> anyhow::Result<()> {
+        tx: &flume::Sender<(Uri, Diagnostic)>,
+    ) -> anyhow::Result<bool> {
         if let Some(host) = span.file_name.authority().map(|auth| auth.host()) {
             let data = span.suggested_replacement.as_ref().map(|replacement| {
                 serde_json::json!(DiagnosticData {
@@ -168,7 +167,6 @@ impl Cargo {
 
             let url = str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?;
             tracing::debug!(uri = url.to_string(), ?host, "maybe adding diagnostic");
-            let diagnostics: &mut Vec<Diagnostic> = diagnostics.entry(url.clone()).or_default();
             let diagnostic = Diagnostic {
                 range: Range::new(
                     Position::new(span.line_start - 1, span.column_start - 1),
@@ -180,17 +178,12 @@ impl Cargo {
                 data,
                 ..Diagnostic::default()
             };
-            if !diagnostics.iter().any(|existing_diagnostic| {
-                diagnostic.range == existing_diagnostic.range
-                    && diagnostic.severity == existing_diagnostic.severity
-                    && diagnostic.message == existing_diagnostic.message
-            }) {
-                tracing::debug!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
-                diagnostics.push(diagnostic);
-            }
+            tracing::debug!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
+            tx.send_async((url, diagnostic)).await?;
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     pub(crate) async fn cargo_diagnostics(
@@ -199,7 +192,8 @@ impl Cargo {
         project_root: Option<&PathBuf>,
         destination_folder: &Path,
         progress: &OngoingProgress<Bounded, NotCancellable>,
-    ) -> anyhow::Result<HashMap<Uri, Vec<Diagnostic>>> {
+        tx: flume::Sender<(Uri, Diagnostic)>,
+    ) -> anyhow::Result<()> {
         tracing::debug!("running command `cargo {command_args:?}`");
         let mut cmd = Command::new("cargo");
         cmd.env("CARGO_TERM_PROGRESS_WHEN", "always");
@@ -218,10 +212,10 @@ impl Cargo {
         let stdout = child.stdout.take().context("taking stdout")?;
         let stderr = child.stderr.take().context("taking stderr")?;
 
-        let mut diagnostics = HashMap::new();
         let log_cargo = env::var("BACON_LS_LOG_CARGO").unwrap_or("off".to_string());
 
         let stdout_future = async {
+            let mut at_least_one_diag = false;
             let mut reader = tokio::io::BufReader::new(stdout).lines();
             while let Some(line) = reader.next_line().await? {
                 match serde_json::from_str::<CargoLine>(&line) {
@@ -230,27 +224,29 @@ impl Cargo {
                             && message.message_type == "diagnostic"
                         {
                             for span in message.spans.into_iter() {
-                                Self::maybe_add_diagnostic(
+                                at_least_one_diag |= Self::maybe_add_diagnostic(
                                     project_root,
                                     &message.level,
                                     ansi_regex::ansi_regex()
                                         .replace_all(&message.rendered, "")
                                         .trim_end_matches('\n'),
                                     &span,
-                                    &mut diagnostics,
+                                    &tx,
                                 )
+                                .await
                                 .context("adding spans")?;
                             }
 
                             for children in message.children.into_iter() {
                                 for span in children.spans.into_iter() {
-                                    Self::maybe_add_diagnostic(
+                                    at_least_one_diag |= Self::maybe_add_diagnostic(
                                         project_root,
                                         &children.level,
                                         &children.message,
                                         &span,
-                                        &mut diagnostics,
+                                        &tx,
                                     )
+                                    .await
                                     .context("adding child spans")?;
                                 }
                             }
@@ -259,7 +255,7 @@ impl Cargo {
                     Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
                 }
             }
-            anyhow::Ok(())
+            anyhow::Ok(at_least_one_diag)
         };
 
         let stderr_future = async {
@@ -305,7 +301,7 @@ impl Cargo {
 
         // If something failed when parsing stdout we consider this an error as
         // diagnostics are parsed from stdout
-        stdout_result?;
+        let at_least_one_diag = stdout_result?;
 
         // However we don't consider failing to parse stderr as bad
         let logged_errors = match stderr_result {
@@ -325,12 +321,11 @@ impl Cargo {
         //
         // So we do hacky thing we consider that the command was likely invalid if there are some
         // error logs but no diagnostics
-        if !logged_errors.is_empty() && diagnostics.is_empty() {
+        if !logged_errors.is_empty() && !at_least_one_diag {
             anyhow::bail!("cargo exited with {status}:{logged_errors}");
         }
 
-        tracing::debug!("diags inner: {diagnostics:?}");
-        Ok(diagnostics)
+        Ok(())
     }
 
     pub(crate) async fn find_git_root_directory() -> Option<PathBuf> {

@@ -1,6 +1,6 @@
 //! Bacon Language Server
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use argh::FromArgs;
 use bacon::Bacon;
-use ls_types::{MessageType, ProgressToken, Uri, WorkspaceFolder};
+use flume::RecvError;
+use ls_types::{Diagnostic, MessageType, ProgressToken, Uri, WorkspaceFolder};
 use native::Cargo;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
@@ -86,6 +87,9 @@ pub(crate) struct CargoOptions {
     pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
     pub(crate) publish_mode: PublishMode,
+    // Interval at which we refresh (send) cargo diagnostics we have so far
+    // None means wait until the cargo command is fully done
+    pub(crate) refresh_interval_seconds: Option<Duration>,
 }
 
 impl CargoOptions {
@@ -184,6 +188,22 @@ impl CargoOptions {
             };
         }
 
+        if let Some(value) = cargo_obj.get("refreshIntervalSeconds") {
+            tracing::debug!("refreshIntervalSeconds: {value:?}");
+            if value.is_null() {
+                self.refresh_interval_seconds = None;
+            } else {
+                let seconds = value
+                    .as_i64()
+                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                if seconds < 0 {
+                    self.refresh_interval_seconds = None;
+                } else {
+                    self.refresh_interval_seconds = Some(Duration::from_secs(seconds as u64));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -201,6 +221,7 @@ impl Default for CargoOptions {
             features: vec![],
             extra_command_args: vec![],
             package: None,
+            refresh_interval_seconds: Some(Duration::from_secs(5)),
         }
     }
 }
@@ -625,6 +646,7 @@ impl BaconLs {
         let build_folder = runtime.build_folder.clone();
         runtime.diagnostics_version += 1;
         let version = runtime.diagnostics_version;
+        let refresh_interval = config.refresh_interval_seconds;
 
         let cancel_token = match publish_mode {
             PublishMode::CancelRunning => {
@@ -656,22 +678,105 @@ impl BaconLs {
             .begin()
             .await;
 
-        let cargo_future =
-            Cargo::cargo_diagnostics(cmd_args, &cargo_env, project_root.as_ref(), &build_folder, &progress);
+        let (tx, rx) = flume::unbounded();
+
+        let cargo_future = Cargo::cargo_diagnostics(
+            cmd_args,
+            &cargo_env,
+            project_root.as_ref(),
+            &build_folder,
+            &progress,
+            tx,
+        );
+
+        let consumer_client = self.client.clone();
+        let diagnostic_consumer = async move {
+            let mut diagnostics_map = HashMap::<Uri, (Vec<Diagnostic>, bool)>::new();
+
+            fn accumulate_diagnostics(
+                recv_result: Result<(Uri, Diagnostic), RecvError>,
+                diagnostics_map: &mut HashMap<Uri, (Vec<Diagnostic>, bool)>,
+            ) -> bool {
+                let Ok((url, diagnostic)) = recv_result else {
+                    return true;
+                };
+                let (diagnostics, dirty) = diagnostics_map.entry(url).or_default();
+                if !diagnostics.iter().any(|existing| {
+                    diagnostic.range == existing.range
+                        && diagnostic.severity == existing.severity
+                        && diagnostic.message == existing.message
+                }) {
+                    diagnostics.push(diagnostic);
+                    *dirty = true;
+                }
+                false
+            }
+
+            if let Some(refresh_interval) = refresh_interval {
+                let mut t = std::time::Instant::now();
+                loop {
+                    tokio::select! {
+                        result = rx.recv_async() => {
+                            if accumulate_diagnostics(result, &mut diagnostics_map) {
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(t + refresh_interval)) => {}
+                    }
+
+                    if t.elapsed() >= refresh_interval {
+                        for (url, (diagnostics, dirty)) in diagnostics_map.iter_mut() {
+                            if *dirty {
+                                consumer_client
+                                    .publish_diagnostics(url.clone(), diagnostics.clone(), Some(version))
+                                    .await;
+                                *dirty = false;
+                            }
+                        }
+                        t = std::time::Instant::now();
+                    }
+                }
+            } else {
+                loop {
+                    if accumulate_diagnostics(rx.recv_async().await, &mut diagnostics_map) {
+                        break;
+                    }
+                }
+            }
+
+            diagnostics_map
+        };
+
+        let consumer_handle = tokio::spawn(diagnostic_consumer);
 
         let result = tokio::select! {
-            result = cargo_future => result,
+            result = cargo_future => {
+                result.map(|_| false)
+            },
             () = cancel_token.cancelled() => {
                 tracing::info!("cargo run cancelled by newer request");
-                progress.finish_with_message("canceled by user").await;
+                Ok(true)
+            }
+        };
+
+        let was_cancelled = match result {
+            Ok(t) => t,
+            Err(error) => {
+                // We know there wont be any diagnostics as they way we detect cargo errors is
+                // if it exists with non 0 exit code and no diagnostics were found
+                tracing::error!(?error, "error building diagnostics");
+                progress.finish().await;
+                let _ = consumer_handle.await;
+                self.client.log_message(MessageType::ERROR, format!("{error}")).await;
+                self.client.show_message(MessageType::ERROR, format!("{error}")).await;
                 return;
             }
         };
 
-        let mut diagnostics = match result {
-            Ok(diagnostics) => diagnostics,
+        let mut diagnostics = match consumer_handle.await {
+            Ok(d) => d,
             Err(error) => {
-                tracing::error!(?error, "error building diagnostics");
+                tracing::error!(?error, "diagnostics fetching task panicked");
                 progress.finish().await;
                 self.client.log_message(MessageType::ERROR, format!("{error}")).await;
                 self.client.show_message(MessageType::ERROR, format!("{error}")).await;
@@ -685,27 +790,32 @@ impl BaconLs {
             runtime: cargo_rt,
         }) = &mut state.backend
         else {
-            tracing::warn!("backend changed during cargo run, discarding results");
-            progress
-                .finish_with_message("backend switched, diagnostics discarded")
-                .await;
+            // This should be impossible to land here, if we do there a logic error
+            tracing::error!("backend changed during cargo run");
             return;
         };
         let publish_mode = config.publish_mode;
 
         for file in cargo_rt.files_with_diags.drain() {
-            let _ = diagnostics.entry(file).or_insert(vec![]);
+            // Add empty diagnostics so that it get cleared later
+            let _ = diagnostics.entry(file).or_insert((vec![], true));
         }
 
-        for (uri, diagnostics) in diagnostics.into_iter() {
+        for (uri, (diagnostics, is_dirty)) in diagnostics.into_iter() {
             tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
             if !diagnostics.is_empty() {
                 let _ = cargo_rt.files_with_diags.insert(uri.clone());
             }
-            self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+            if is_dirty {
+                self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+            }
         }
 
-        progress.finish_with_message("done").await;
+        if was_cancelled {
+            progress.finish_with_message("cancelled by user").await;
+        } else {
+            progress.finish_with_message("done").await;
+        }
 
         if let PublishMode::QueueIfRunning = publish_mode {
             match cargo_rt.run_state {
