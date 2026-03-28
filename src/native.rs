@@ -38,6 +38,11 @@ async fn read_until_cr_or_lf<R: AsyncBufRead + Unpin>(reader: &mut R, buf: &mut 
 }
 
 #[derive(Debug, Deserialize)]
+struct CargoExpansion {
+    span: CargoSpan,
+}
+
+#[derive(Debug, Deserialize)]
 struct CargoSpan {
     #[serde(deserialize_with = "deserialize_url")]
     file_name: Uri,
@@ -46,6 +51,28 @@ struct CargoSpan {
     column_start: u32,
     column_end: u32,
     suggested_replacement: Option<String>,
+    #[serde(default)]
+    expansion: Option<Box<CargoExpansion>>,
+}
+
+impl CargoSpan {
+    /// Returns the innermost span in the macro expansion chain that points to a
+    /// project-local (relative-path) file. Falls back to `self` when no such
+    /// span exists (e.g. errors purely within a proc-macro).
+    fn project_span(&self) -> &Self {
+        let is_relative = self
+            .file_name
+            .authority()
+            .map(|a| !a.host().is_empty())
+            .unwrap_or(false);
+        if is_relative {
+            return self;
+        }
+        if let Some(exp) = &self.expansion {
+            return exp.span.project_span();
+        }
+        self
+    }
 }
 
 fn deserialize_url<'de, D>(deserializer: D) -> Result<Uri, D::Error>
@@ -82,7 +109,7 @@ struct CargoLine {
 pub(crate) struct Cargo;
 
 /// Parses the ouput line from cargo command that looks like:
-/// ```
+/// ```text
 /// Building [====       ] 1/400: thing, thig2
 /// ```
 fn parse_building_line(line: &str) -> Option<(String, u32)> {
@@ -223,27 +250,29 @@ impl Cargo {
                         if let Some(message) = message.message
                             && message.message_type == "diagnostic"
                         {
-                            for span in message.spans.into_iter() {
+                            let rendered = ansi_regex::ansi_regex()
+                                .replace_all(&message.rendered, "")
+                                .into_owned();
+                            let rendered = rendered.trim_end_matches('\n');
+                            for span in &message.spans {
                                 at_least_one_diag |= Self::maybe_add_diagnostic(
                                     project_root,
                                     &message.level,
-                                    ansi_regex::ansi_regex()
-                                        .replace_all(&message.rendered, "")
-                                        .trim_end_matches('\n'),
-                                    &span,
+                                    rendered,
+                                    span.project_span(),
                                     &tx,
                                 )
                                 .await
                                 .context("adding spans")?;
                             }
 
-                            for children in message.children.into_iter() {
-                                for span in children.spans.into_iter() {
+                            for children in &message.children {
+                                for span in &children.spans {
                                     at_least_one_diag |= Self::maybe_add_diagnostic(
                                         project_root,
                                         &children.level,
                                         &children.message,
-                                        &span,
+                                        span.project_span(),
                                         &tx,
                                     )
                                     .await
@@ -383,5 +412,79 @@ impl Cargo {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real cargo JSON line captured from a tokio::select! type error. The
+    // primary spans all point into the tokio registry source; only the
+    // innermost expansion span resolves back to `src/lib.rs`.
+    const TOKIO_SELECT_EXPANSION: &str =
+        include_str!("testdata/expansion-needed.json");
+
+    #[test]
+    fn test_project_span_follows_macro_expansion_chain() {
+        let line: CargoLine = serde_json::from_str(TOKIO_SELECT_EXPANSION).unwrap();
+        let message = line.message.unwrap();
+        assert_eq!(message.message_type, "diagnostic");
+
+        for span in &message.spans {
+            let resolved = span.project_span();
+            // The innermost expansion span points to src/lib.rs lines 708-715.
+            let host = resolved.file_name.authority().map(|a| a.host().to_string());
+            assert_eq!(
+                host,
+                Some("src".to_string()),
+                "expected project-local span, got {:?}",
+                resolved.file_name
+            );
+            assert_eq!(resolved.line_start, 708);
+            assert_eq!(resolved.line_end, 715);
+        }
+    }
+
+    #[test]
+    fn test_project_span_returns_self_when_already_project_local() {
+        // A span whose file_name is already a relative (project-local) path
+        // should be returned as-is without traversing the expansion chain.
+        let json = r#"{
+            "file_name": "src/main.rs",
+            "byte_start": 0, "byte_end": 10,
+            "line_start": 1, "line_end": 1,
+            "column_start": 1, "column_end": 10,
+            "is_primary": true,
+            "text": [],
+            "label": null,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "expansion": null
+        }"#;
+        let span: CargoSpan = serde_json::from_str(json).unwrap();
+        let resolved = span.project_span();
+        assert!(std::ptr::eq(resolved, &span));
+    }
+
+    #[test]
+    fn test_project_span_falls_back_to_self_when_no_project_span_in_chain() {
+        // When every span in the expansion chain points to an external
+        // (absolute-path) file, project_span falls back to self.
+        let json = r#"{
+            "file_name": "/home/user/.cargo/registry/src/foo/lib.rs",
+            "byte_start": 0, "byte_end": 10,
+            "line_start": 5, "line_end": 5,
+            "column_start": 1, "column_end": 10,
+            "is_primary": true,
+            "text": [],
+            "label": null,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "expansion": null
+        }"#;
+        let span: CargoSpan = serde_json::from_str(json).unwrap();
+        let resolved = span.project_span();
+        assert!(std::ptr::eq(resolved, &span));
     }
 }
