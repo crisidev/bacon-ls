@@ -189,7 +189,6 @@ impl CargoOptions {
         }
 
         if let Some(value) = cargo_obj.get("refreshIntervalSeconds") {
-            tracing::debug!("refreshIntervalSeconds: {value:?}");
             if value.is_null() {
                 self.refresh_interval_seconds = None;
             } else {
@@ -446,7 +445,7 @@ impl BaconLs {
     }
 
     async fn pull_configuration(&self) {
-        tracing::info!("pull_configuration");
+        tracing::debug!("pull_configuration");
 
         let response = match self
             .client
@@ -481,7 +480,10 @@ impl BaconLs {
 
         if state.backend.is_none() {
             let backend_choice = match Self::detect_backend(values) {
-                Ok(choice) => choice,
+                Ok(choice) => {
+                    tracing::info!(backend = ?choice, "backend detected");
+                    choice
+                }
                 Err(msg) => {
                     tracing::error!("{msg}");
                     self.client.show_message(MessageType::ERROR, &msg).await;
@@ -567,6 +569,7 @@ impl BaconLs {
                             )),
                         },
                     });
+                    tracing::info!("bacon backend initialized");
                 }
                 BackendChoice::Cargo => {
                     let mut config = CargoOptions::default();
@@ -582,6 +585,7 @@ impl BaconLs {
                     if let Some(root) = &state.project_root {
                         runtime.build_folder = root.clone();
                     }
+                    tracing::info!(build_folder = ?runtime.build_folder, "cargo backend initialized");
                     state.backend = Some(BackendRuntime::Cargo { config, runtime });
                 }
             }
@@ -616,6 +620,7 @@ impl BaconLs {
                     if let Some(root) = project_root {
                         runtime.build_folder = root;
                     }
+                    tracing::debug!("cargo configuration updated");
                 }
                 Some(BackendRuntime::Bacon { config, .. }) => {
                     if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
@@ -626,6 +631,7 @@ impl BaconLs {
                             .show_message(MessageType::ERROR, format!("Error in \"bacon\" section: {e}"))
                             .await;
                     }
+                    tracing::debug!("bacon configuration updated");
                 }
                 None => unreachable!("backend is Some in this branch"),
             }
@@ -633,6 +639,7 @@ impl BaconLs {
     }
 
     async fn publish_cargo_diagnostics(&self) {
+        tracing::info!("starting cargo diagnostics run");
         let mut guard = self.state.write().await;
         let project_root = guard.project_root.clone();
 
@@ -773,6 +780,8 @@ impl BaconLs {
             }
         };
 
+        tracing::info!(was_cancelled, "cargo run finished, collecting diagnostics");
+
         let mut diagnostics = match consumer_handle.await {
             Ok(d) => d,
             Err(error) => {
@@ -802,7 +811,7 @@ impl BaconLs {
         }
 
         for (uri, (diagnostics, is_dirty)) in diagnostics.into_iter() {
-            tracing::info!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+            tracing::debug!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
             if !diagnostics.is_empty() {
                 let _ = cargo_rt.files_with_diags.insert(uri.clone());
             }

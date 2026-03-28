@@ -137,8 +137,8 @@ impl Cargo {
             };
 
             let file_name = {
-                tracing::debug!(?root_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
-                tracing::debug!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
+                tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
+                tracing::trace!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
 
                 // If host is empty, the span.file_name is an absolute path.
                 let uri = if host.is_empty() {
@@ -166,7 +166,7 @@ impl Cargo {
             }?;
 
             let url = str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?;
-            tracing::debug!(uri = url.to_string(), ?host, "maybe adding diagnostic");
+            tracing::trace!(uri = url.to_string(), ?host, "maybe adding diagnostic");
             let diagnostic = Diagnostic {
                 range: Range::new(
                     Position::new(span.line_start - 1, span.column_start - 1),
@@ -178,7 +178,7 @@ impl Cargo {
                 data,
                 ..Diagnostic::default()
             };
-            tracing::debug!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
+            tracing::trace!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
             tx.send_async((url, diagnostic)).await?;
             return Ok(true);
         }
@@ -194,7 +194,7 @@ impl Cargo {
         progress: &OngoingProgress<Bounded, NotCancellable>,
         tx: flume::Sender<(Uri, Diagnostic)>,
     ) -> anyhow::Result<()> {
-        tracing::debug!("running command `cargo {command_args:?}`");
+        tracing::info!(cwd = ?destination_folder, "running cargo {}", command_args.join(" "));
         let mut cmd = Command::new("cargo");
         cmd.env("CARGO_TERM_PROGRESS_WHEN", "always");
         cmd.env("CARGO_TERM_PROGRESS_WIDTH", "80");
@@ -276,14 +276,14 @@ impl Cargo {
                     continue;
                 }
                 if log_cargo != "off" {
-                    tracing::info!("[cargo stderr]{segment}");
+                    tracing::trace!("[cargo stderr]{segment}");
                 }
                 let trimmed = segment.trim_start();
                 if let Some((message, pct)) = parse_building_line(trimmed) {
-                    tracing::debug!(msg = message, pct = pct, "reported Building");
+                    tracing::trace!(msg = message, pct = pct, "reported Building");
                     progress.report_with_message(message, pct).await;
                 } else if let Some(msg) = trimmed.strip_prefix("Blocking") {
-                    tracing::debug!(msg = msg, "reported Blocking");
+                    tracing::trace!(msg = msg, "reported Blocking");
                     progress.report_with_message(msg.trim_start(), 0).await;
                 } else if let Some(msg) = trimmed.strip_prefix("error:") {
                     // This will catch things that looks like this
@@ -313,7 +313,7 @@ impl Cargo {
         };
 
         let status = child.wait().await?;
-        tracing::debug!("cargo command finished with status {status}");
+        tracing::info!("cargo finished with status {status}");
 
         // We can't rely on exit code, as cargo exit with the same code regardless if its because
         // of the args / invalid command or because the check fails due to the code being check

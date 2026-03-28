@@ -104,6 +104,7 @@ impl LanguageServer for BaconLs {
         tracing::info!("initialized complete");
 
         if backend_chosen == BackendChoice::Cargo {
+            tracing::info!("triggering initial cargo diagnostics");
             self.publish_cargo_diagnostics().await
         }
     }
@@ -113,10 +114,10 @@ impl LanguageServer for BaconLs {
         if let Some(settings) = params.settings.as_object()
             && !settings.is_empty()
         {
-            tracing::info!("using client provided settings");
+            tracing::debug!("using client provided settings");
             self.adapt_to_settings(params.settings).await;
         } else {
-            tracing::info!("settings is either not an object or is empty");
+            tracing::debug!("settings is either not an object or is empty");
             self.pull_configuration().await;
         }
     }
@@ -184,11 +185,6 @@ impl LanguageServer for BaconLs {
     async fn did_rename_files(&self, params: RenameFilesParams) {
         tracing::debug!("client sent didRenameFiles request for {:?}", params.files);
         for file in params.files {
-            tracing::debug!(
-                "client sent didRenameFiles request {} -> {}",
-                file.old_uri,
-                file.new_uri
-            );
             if let (Ok(old_uri), Ok(new_uri)) = (str::parse::<Uri>(&file.old_uri), str::parse::<Uri>(&file.new_uri)) {
                 let mut state = self.state.write().await;
                 if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
@@ -259,6 +255,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
+        tracing::info!("shutdown requested");
         let mut state = self.state.write().await;
         let backend = state.backend.take();
         drop(state);
