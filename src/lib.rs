@@ -820,7 +820,16 @@ impl BaconLs {
             }
         };
 
-        tracing::info!(was_cancelled, "cargo run finished, collecting diagnostics");
+        if was_cancelled {
+            // The newer run that triggered cancellation owns publishing. Touching
+            // files_with_diags or publishing partial results here would race with
+            // it and could push stale diagnostics on top of correct ones.
+            let _ = consumer_handle.await;
+            progress.finish_with_message("cancelled by user").await;
+            return;
+        }
+
+        tracing::info!("cargo run finished, collecting diagnostics");
 
         let mut diagnostics = match consumer_handle.await {
             Ok(d) => d,
@@ -845,6 +854,22 @@ impl BaconLs {
         };
         let publish_mode = config.publish_mode;
 
+        // In CancelRunning mode a newer run may have started after our cargo
+        // process finished but before we reached this point. If so our results
+        // are stale — skip publishing so we don't overwrite the newer run's
+        // output with old data.
+        if let PublishMode::CancelRunning = publish_mode
+            && version != cargo_rt.diagnostics_version
+        {
+            tracing::info!(
+                version,
+                current = cargo_rt.diagnostics_version,
+                "skipping stale publish"
+            );
+            progress.finish_with_message("superseded by newer run").await;
+            return;
+        }
+
         for file in cargo_rt.files_with_diags.drain() {
             // Add empty diagnostics so that it get cleared later
             let _ = diagnostics.entry(file).or_insert((vec![], true));
@@ -868,13 +893,8 @@ impl BaconLs {
                 self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
             }
         }
-        if was_cancelled {
-            let message = format!("cancelled bu user, errors: {num_errors}, warnings: {num_warnings}");
-            progress.finish_with_message(message).await;
-        } else {
-            let message = format!("done, errors: {num_errors}, warnings: {num_warnings}");
-            progress.finish_with_message(message).await;
-        }
+        let message = format!("done, errors: {num_errors}, warnings: {num_warnings}");
+        progress.finish_with_message(message).await;
 
         if let PublishMode::QueueIfRunning = publish_mode {
             match cargo_rt.run_state {
