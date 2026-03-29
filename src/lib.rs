@@ -8,7 +8,7 @@ use std::time::Duration;
 use argh::FromArgs;
 use bacon::Bacon;
 use flume::RecvError;
-use ls_types::{Diagnostic, MessageType, ProgressToken, Range, Uri, WorkspaceFolder};
+use ls_types::{Diagnostic, DiagnosticSeverity, MessageType, ProgressToken, Range, Uri, WorkspaceFolder};
 use native::Cargo;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
@@ -850,8 +850,17 @@ impl BaconLs {
             let _ = diagnostics.entry(file).or_insert((vec![], true));
         }
 
+        let mut num_warnings = 0;
+        let mut num_errors = 0;
         for (uri, (diagnostics, is_dirty)) in diagnostics.into_iter() {
             tracing::debug!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
+            for diagnostic in &diagnostics {
+                match diagnostic.severity {
+                    Some(DiagnosticSeverity::ERROR) => num_errors += 1,
+                    Some(DiagnosticSeverity::WARNING) => num_warnings += 1,
+                    Some(_) | None => {}
+                }
+            }
             if !diagnostics.is_empty() {
                 let _ = cargo_rt.files_with_diags.insert(uri.clone());
             }
@@ -859,11 +868,12 @@ impl BaconLs {
                 self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
             }
         }
-
         if was_cancelled {
-            progress.finish_with_message("cancelled by user").await;
+            let message = format!("cancelled bu user, errors: {num_errors}, warnings: {num_warnings}");
+            progress.finish_with_message(message).await;
         } else {
-            progress.finish_with_message("done").await;
+            let message = format!("done, errors: {num_errors}, warnings: {num_warnings}");
+            progress.finish_with_message(message).await;
         }
 
         if let PublishMode::QueueIfRunning = publish_mode {
