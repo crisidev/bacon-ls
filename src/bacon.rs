@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::Client;
 
-use crate::{BackendRuntime, BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
+use crate::{BackendRuntime, BaconLs, Correction, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -211,11 +211,15 @@ impl Bacon {
         };
 
         let mut message = line_split[6].replace("\\n", "\n").trim_end_matches('\n').to_string();
+        let range = Range::new(
+            Position::new(line_start - 1, column_start - 1),
+            Position::new(line_end - 1, column_end - 1),
+        );
         let replacement = line_split[8];
         let data = if replacement != "none" {
             tracing::debug!("storing potential quick fix code action to replace word with {replacement}");
             Some(serde_json::json!(DiagnosticData {
-                corrections: vec![replacement.into()]
+                corrections: vec![Correction::from_single(range, replacement)]
             }))
         } else {
             None
@@ -234,10 +238,7 @@ impl Bacon {
                 .to_string()
         }
         let diagnostic = Diagnostic {
-            range: Range::new(
-                Position::new(line_start - 1, column_start - 1),
-                Position::new(line_end - 1, column_end - 1),
-            ),
+            range,
             severity: Some(severity),
             source: Some(PKG_NAME.to_string()),
             message,

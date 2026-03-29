@@ -5,13 +5,15 @@ use std::{
 };
 
 use anyhow::Context;
-use ls_types::{Diagnostic, DiagnosticSeverity, InitializeParams, Position, Range, Uri};
+use ls_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, InitializeParams, Location, Position, Range, Uri,
+};
 use serde::{Deserialize, Deserializer};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio::process::Command;
 use tower_lsp_server::{Bounded, NotCancellable, OngoingProgress};
 
-use crate::{DiagnosticData, PKG_NAME};
+use crate::{Correction, CorrectionEdit, DiagnosticData, PKG_NAME};
 
 /// Like `read_until` but stops at either `\r` or `\n`.
 /// Returns the number of bytes read (0 = EOF).
@@ -51,11 +53,18 @@ struct CargoSpan {
     column_start: u32,
     column_end: u32,
     suggested_replacement: Option<String>,
+    suggestion_applicability: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
     #[serde(default)]
     expansion: Option<Box<CargoExpansion>>,
 }
 
 impl CargoSpan {
+    fn is_machine_applicable(&self) -> bool {
+        self.suggestion_applicability.as_deref() == Some("MachineApplicable")
+    }
+
     /// Returns the innermost span in the macro expansion chain that points to a
     /// project-local (relative-path) file. Falls back to `self` when no such
     /// span exists (e.g. errors purely within a proc-macro).
@@ -86,7 +95,6 @@ where
 #[derive(Debug, Deserialize)]
 struct CargoChildren {
     message: String,
-    level: String,
     spans: Vec<CargoSpan>,
 }
 
@@ -141,76 +149,165 @@ impl Cargo {
         }
     }
 
+    fn span_to_uri(project_root: Option<&PathBuf>, span: &CargoSpan) -> anyhow::Result<Option<Uri>> {
+        let Some(host) = span.file_name.authority().map(|auth| auth.host()) else {
+            return Ok(None);
+        };
+        let root_dir = match project_root {
+            Some(r) => r.clone(),
+            None => env::current_dir().context("getting current dir")?,
+        };
+        tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, "building uri");
+        // If host is empty, the span.file_name is an absolute path.
+        let path = if host.is_empty() {
+            PathBuf::from(span.file_name.path().as_str())
+        } else {
+            let tmp = root_dir.join(host);
+            // For first level paths, e.g., `build.rs`, this ensures that we dont join an
+            // empty string (because `file_name` is empty), creating a non-existent
+            // `build.rs/` directory in the source root, and therefore failing
+            // canonicalization.
+            if span.file_name.path().as_str().is_empty() {
+                tmp
+            } else {
+                tmp.join(span.file_name.path().as_str().replacen("/", "", 1))
+            }
+        };
+        // Canonicalization is important, otherwise the file path cannot be compared with the
+        // paths we get passed from the LSP server.
+        let file_name = path
+            .canonicalize()
+            .with_context(|| format!("canonicalizing uri: {}", path.display()))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?;
+        Ok(Some(
+            str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?,
+        ))
+    }
+
     async fn maybe_add_diagnostic(
         project_root: Option<&PathBuf>,
-        severity: &str,
-        message: &str,
-        span: &CargoSpan,
+        message: &CargoMessage,
         tx: &flume::Sender<(Uri, Diagnostic)>,
     ) -> anyhow::Result<bool> {
-        if let Some(host) = span.file_name.authority().map(|auth| auth.host()) {
-            let data = span.suggested_replacement.as_ref().map(|replacement| {
-                serde_json::json!(DiagnosticData {
-                    corrections: vec![replacement.into()]
-                })
-            });
+        let rendered = ansi_regex::ansi_regex().replace_all(&message.rendered, "").into_owned();
+        let rendered = rendered.trim_end_matches('\n');
 
-            let root_dir = {
-                if let Some(project_root) = project_root {
-                    project_root
+        // Children with primary spans become related information so editors can
+        // show them inline alongside the parent diagnostic. Children with no
+        // spans are dropped here — their text is already included in the
+        // parent's rendered message.
+        let related_information: Vec<DiagnosticRelatedInformation> = message
+            .children
+            .iter()
+            .flat_map(|child| {
+                child
+                    .spans
+                    .iter()
+                    .filter(|s| s.is_primary)
+                    .filter_map(|s| {
+                        Self::span_to_uri(project_root, s.project_span())
+                            .ok()
+                            .flatten()
+                            .map(|uri| DiagnosticRelatedInformation {
+                                location: Location {
+                                    uri,
+                                    range: Range::new(
+                                        Position::new(s.line_start - 1, s.column_start - 1),
+                                        Position::new(s.line_end - 1, s.column_end - 1),
+                                    ),
+                                },
+                                message: child.message.clone(),
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let related_information = if related_information.is_empty() {
+            None
+        } else {
+            Some(related_information)
+        };
+
+        tracing::debug!(info = ?related_information, "related information");
+
+        // Children may carry suggested_replacements (e.g. "prefix with _") even
+        // when the primary span has none. Group all MachineApplicable primary
+        // spans within each child into a single Correction so editors can apply
+        // them atomically (e.g. removing "Compact" from "{Compact, FmtSpan}"
+        // requires three separate byte-range deletions in one edit).
+        let child_corrections: Vec<Correction> = message
+            .children
+            .iter()
+            .filter_map(|child| {
+                let edits: Vec<CorrectionEdit> = child
+                    .spans
+                    .iter()
+                    .filter(|s| s.is_primary && s.is_machine_applicable())
+                    .filter_map(|s| {
+                        let new_text = s.suggested_replacement.as_deref()?;
+                        let resolved = s.project_span();
+                        Some(CorrectionEdit {
+                            range: Range::new(
+                                Position::new(resolved.line_start - 1, resolved.column_start - 1),
+                                Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                            ),
+                            new_text: new_text.to_string(),
+                        })
+                    })
+                    .collect();
+                if edits.is_empty() {
+                    None
                 } else {
-                    &env::current_dir().context("getting current dir")?
+                    Some(Correction::from_multi(edits))
                 }
+            })
+            .collect();
+
+        // A cargo message can have several primary spans pointing to different
+        // project locations (e.g. conflicting trait impls, lifetime conflicts
+        // across multiple binding sites). We emit a diagnostic for every span
+        // that resolves to a project-local URI; spans that don't (pure-macro
+        // or registry paths) are skipped via the `?` below.
+        let mut at_least_one = false;
+        for span in message.spans.iter().filter(|s| s.is_primary) {
+            let resolved = span.project_span();
+            let Some(url) = Self::span_to_uri(project_root, resolved)? else {
+                continue;
             };
-
-            let file_name = {
-                tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, file_name_str = span.file_name.to_string(), "building uri");
-                tracing::trace!("replaced path: {}", span.file_name.path().as_str().replacen("/", "", 1));
-
-                // If host is empty, the span.file_name is an absolute path.
-                let uri = if host.is_empty() {
-                    PathBuf::from(span.file_name.path().as_str())
-                } else {
-                    let tmp = root_dir.join(host);
-                    // For first level paths, e.g., `build.rs`, this ensures that we dont join an
-                    // empty string (because `file_name` is empty), creating a non-existent
-                    // `build.rs/` directory in the source root, and therefore failing
-                    // canonicalization.
-                    if span.file_name.path().as_str().is_empty() {
-                        tmp
-                    } else {
-                        tmp.join(span.file_name.path().as_str().replacen("/", "", 1))
-                    }
-                };
-
-                // Canonicalization is important, otherwise the file path cannot be compared with the
-                // paths we get passed from the LSP server.
-                uri.canonicalize()
-                    .with_context(|| format!("canonicalizing uri: {}", uri.display()))?
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))
-            }?;
-
-            let url = str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?;
-            tracing::trace!(uri = url.to_string(), ?host, "maybe adding diagnostic");
+            tracing::trace!(uri = url.to_string(), "adding diagnostic");
+            let range = Range::new(
+                Position::new(resolved.line_start - 1, resolved.column_start - 1),
+                Position::new(resolved.line_end - 1, resolved.column_end - 1),
+            );
+            let corrections: Vec<Correction> = resolved
+                .is_machine_applicable()
+                .then_some(resolved.suggested_replacement.as_deref())
+                .flatten()
+                .map(|text| Correction::from_single(range, text))
+                .into_iter()
+                .chain(child_corrections.iter().cloned())
+                .collect();
+            let data = if corrections.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!(DiagnosticData { corrections }))
+            };
             let diagnostic = Diagnostic {
-                range: Range::new(
-                    Position::new(span.line_start - 1, span.column_start - 1),
-                    Position::new(span.line_end - 1, span.column_end - 1),
-                ),
-                severity: Some(Self::parse_severity(severity)),
+                range,
+                severity: Some(Self::parse_severity(&message.level)),
                 source: Some(PKG_NAME.to_string()),
-                message: message.to_string(),
+                message: rendered.to_string(),
+                related_information: related_information.clone(),
                 data,
                 ..Diagnostic::default()
             };
-            tracing::trace!(uri = url.to_string(), ?diagnostic, "adding diagnostic");
+            tracing::trace!(uri = url.to_string(), ?diagnostic, "sending diagnostic");
             tx.send_async((url, diagnostic)).await?;
-            return Ok(true);
+            at_least_one = true;
         }
-
-        Ok(false)
+        Ok(at_least_one)
     }
 
     pub(crate) async fn cargo_diagnostics(
@@ -250,35 +347,9 @@ impl Cargo {
                         if let Some(message) = message.message
                             && message.message_type == "diagnostic"
                         {
-                            let rendered = ansi_regex::ansi_regex()
-                                .replace_all(&message.rendered, "")
-                                .into_owned();
-                            let rendered = rendered.trim_end_matches('\n');
-                            for span in &message.spans {
-                                at_least_one_diag |= Self::maybe_add_diagnostic(
-                                    project_root,
-                                    &message.level,
-                                    rendered,
-                                    span.project_span(),
-                                    &tx,
-                                )
+                            at_least_one_diag |= Self::maybe_add_diagnostic(project_root, &message, &tx)
                                 .await
-                                .context("adding spans")?;
-                            }
-
-                            for children in &message.children {
-                                for span in &children.spans {
-                                    at_least_one_diag |= Self::maybe_add_diagnostic(
-                                        project_root,
-                                        &children.level,
-                                        &children.message,
-                                        span.project_span(),
-                                        &tx,
-                                    )
-                                    .await
-                                    .context("adding child spans")?;
-                                }
-                            }
+                                .context("adding diagnostic")?;
                         }
                     }
                     Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
@@ -422,8 +493,21 @@ mod tests {
     // Real cargo JSON line captured from a tokio::select! type error. The
     // primary spans all point into the tokio registry source; only the
     // innermost expansion span resolves back to `src/lib.rs`.
-    const TOKIO_SELECT_EXPANSION: &str =
-        include_str!("testdata/expansion-needed.json");
+    const TOKIO_SELECT_EXPANSION: &str = include_str!("testdata/expansion-needed.json");
+
+    // Real cargo JSON line for an "unused variable" warning. Has two children:
+    // one with no spans (dropped into rendered message) and one help child with
+    // a primary span carrying a suggested_replacement (becomes relatedInformation).
+    const UNUSED_VARIABLE: &str = include_str!("testdata/unused-variable.json");
+
+    // Unused import of a whole `use` item — child span covers the full line
+    // including newline, suggested_replacement="" → "Remove" correction label.
+    const UNUSED_IMPORT_LINE: &str = include_str!("testdata/unused-import-line.json");
+
+    // Unused import inside a grouped `use` — the help child has three primary
+    // spans (identifier + surrounding punctuation), all suggested_replacement=""
+    // → three "Remove" corrections.
+    const UNUSED_IMPORT_GROUPED: &str = include_str!("testdata/unused-import-compact.json");
 
     #[test]
     fn test_project_span_follows_macro_expansion_chain() {
@@ -465,6 +549,116 @@ mod tests {
         let span: CargoSpan = serde_json::from_str(json).unwrap();
         let resolved = span.project_span();
         assert!(std::ptr::eq(resolved, &span));
+    }
+
+    #[test]
+    fn test_children_structure_for_related_information() {
+        let line: CargoLine = serde_json::from_str(UNUSED_VARIABLE).unwrap();
+        let message = line.message.unwrap();
+        assert_eq!(message.message_type, "diagnostic");
+        assert_eq!(message.level, "warning");
+
+        // One primary span pointing directly to project source — no expansion needed.
+        let primary_spans: Vec<_> = message.spans.iter().filter(|s| s.is_primary).collect();
+        assert_eq!(primary_spans.len(), 1);
+        let span = primary_spans[0];
+        assert_eq!(span.project_span().line_start, 719);
+        assert!(
+            span.file_name
+                .authority()
+                .map(|a| !a.host().is_empty())
+                .unwrap_or(false),
+            "primary span should already be project-local"
+        );
+
+        // Two children: first has no spans (relied upon to be in rendered message),
+        // second has a primary span with a suggested_replacement.
+        assert_eq!(message.children.len(), 2);
+        assert!(message.children[0].spans.is_empty());
+        let help_child = &message.children[1];
+        assert_eq!(
+            help_child.message,
+            "if this is intentional, prefix it with an underscore"
+        );
+        let help_spans: Vec<_> = help_child.spans.iter().filter(|s| s.is_primary).collect();
+        assert_eq!(help_spans.len(), 1);
+        assert_eq!(help_spans[0].suggested_replacement.as_deref(), Some("_lol"));
+
+        // The child correction should surface as a code-action on the parent
+        // diagnostic — one Correction per child, grouping all its spans.
+        let help_child_spans: Vec<_> = help_child
+            .spans
+            .iter()
+            .filter(|s| s.is_primary && s.is_machine_applicable())
+            .collect();
+        assert_eq!(help_child_spans.len(), 1);
+        assert_eq!(help_child_spans[0].suggested_replacement.as_deref(), Some("_lol"));
+    }
+
+    #[test]
+    fn test_unused_import_whole_line_produces_remove_correction() {
+        let line: CargoLine = serde_json::from_str(UNUSED_IMPORT_LINE).unwrap();
+        let message = line.message.unwrap();
+        assert_eq!(message.level, "warning");
+
+        let primary_spans: Vec<_> = message.spans.iter().filter(|s| s.is_primary).collect();
+        assert_eq!(primary_spans.len(), 1);
+        // Primary span has no replacement; it's the child that carries the fix.
+        assert!(primary_spans[0].suggested_replacement.is_none());
+
+        // One child with one primary span carrying an empty replacement → one
+        // Correction with one edit, labelled "Remove".
+        assert_eq!(message.children.len(), 2);
+        let help_child = &message.children[1];
+        let primary_spans: Vec<_> = help_child.spans.iter().filter(|s| s.is_primary).collect();
+        assert_eq!(primary_spans.len(), 1);
+        assert_eq!(primary_spans[0].suggested_replacement.as_deref(), Some(""));
+        let resolved = primary_spans[0].project_span();
+        let range = Range::new(
+            Position::new(resolved.line_start - 1, resolved.column_start - 1),
+            Position::new(resolved.line_end - 1, resolved.column_end - 1),
+        );
+        let correction = Correction::from_single(range, "");
+        assert_eq!(correction.label, "Remove");
+        assert_eq!(correction.edits.len(), 1);
+    }
+
+    #[test]
+    fn test_unused_import_grouped_produces_three_remove_corrections() {
+        let line: CargoLine = serde_json::from_str(UNUSED_IMPORT_GROUPED).unwrap();
+        let message = line.message.unwrap();
+        assert_eq!(message.level, "warning");
+
+        // One child with three primary spans (identifier + comma + surrounding
+        // space), all with empty suggested_replacement. They must be grouped
+        // into a single Correction with three CorrectionEdits so the editor
+        // applies all three byte-range deletions atomically.
+        assert_eq!(message.children.len(), 2);
+        let help_child = &message.children[1];
+        let primary_spans: Vec<_> = help_child
+            .spans
+            .iter()
+            .filter(|s| s.is_primary && s.is_machine_applicable())
+            .collect();
+        assert_eq!(primary_spans.len(), 3, "three spans for grouped import removal");
+        let edits: Vec<CorrectionEdit> = primary_spans
+            .iter()
+            .filter_map(|s| {
+                let new_text = s.suggested_replacement.as_deref()?;
+                let resolved = s.project_span();
+                Some(CorrectionEdit {
+                    range: Range::new(
+                        Position::new(resolved.line_start - 1, resolved.column_start - 1),
+                        Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                    ),
+                    new_text: new_text.to_string(),
+                })
+            })
+            .collect();
+        assert_eq!(edits.len(), 3);
+        let correction = Correction::from_multi(edits);
+        assert_eq!(correction.label, "Remove");
+        assert_eq!(correction.edits.len(), 3);
     }
 
     #[test]

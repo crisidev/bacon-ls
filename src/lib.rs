@@ -1,5 +1,4 @@
 //! Bacon Language Server
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -9,7 +8,7 @@ use std::time::Duration;
 use argh::FromArgs;
 use bacon::Bacon;
 use flume::RecvError;
-use ls_types::{Diagnostic, MessageType, ProgressToken, Uri, WorkspaceFolder};
+use ls_types::{Diagnostic, MessageType, ProgressToken, Range, Uri, WorkspaceFolder};
 use native::Cargo;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
@@ -351,9 +350,50 @@ struct State {
     backend: Option<BackendRuntime>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CorrectionEdit {
+    pub(crate) range: Range,
+    pub(crate) new_text: String,
+}
+
+// A single logical fix can require several disjoint byte-range edits. For
+// example, removing `Compact` from `use …::{Compact, FmtSpan}` produces three
+// edits: remove `{`, remove `Compact, `, remove `}`, leaving `use …::FmtSpan`.
+// All edits must be applied atomically so the file stays valid.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Correction {
+    pub(crate) label: String,
+    pub(crate) edits: Vec<CorrectionEdit>,
+}
+
+impl Correction {
+    pub(crate) fn from_single(range: Range, new_text: &str) -> Self {
+        let label = if new_text.is_empty() {
+            "Remove".to_string()
+        } else {
+            format!("Replace with: {new_text}")
+        };
+        Self {
+            label,
+            edits: vec![CorrectionEdit {
+                range,
+                new_text: new_text.to_string(),
+            }],
+        }
+    }
+
+    pub(crate) fn from_multi(edits: Vec<CorrectionEdit>) -> Self {
+        let label = match edits.iter().find(|e| !e.new_text.is_empty()) {
+            None => "Remove".to_string(),
+            Some(e) => format!("Replace with: {}", e.new_text),
+        };
+        Self { label, edits }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DiagnosticData<'c> {
-    corrections: Vec<Cow<'c, str>>,
+struct DiagnosticData {
+    corrections: Vec<Correction>,
 }
 
 #[derive(Debug)]

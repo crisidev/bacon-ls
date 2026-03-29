@@ -10,7 +10,7 @@ use ls_types::{
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
-use crate::{BackendChoice, BackendRuntime, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{BackendChoice, BackendRuntime, BaconLs, Cargo, CorrectionEdit, DiagnosticData, PKG_NAME, PKG_VERSION};
 
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -203,55 +203,57 @@ impl LanguageServer for BaconLs {
         let diagnostics_data_supported = state.diagnostics_data_supported;
         drop(state);
 
-        if diagnostics_data_supported {
-            let actions = params
-                .context
-                .diagnostics
-                .iter()
-                .filter(|diag| diag.source == Some("bacon-ls".to_string()))
-                .flat_map(|diag| match &diag.data {
-                    Some(data) => {
-                        if let Ok(DiagnosticData { corrections }) =
-                            serde_json::from_value::<DiagnosticData>(data.clone())
-                        {
-                            corrections
-                                .iter()
-                                .map(|c| {
-                                    CodeActionOrCommand::CodeAction(CodeAction {
-                                        title: "Replace with bacon-ls suggestion".to_string(),
-                                        kind: Some(CodeActionKind::QUICKFIX),
-                                        diagnostics: Some(vec![diag.clone()]),
-                                        edit: Some(WorkspaceEdit {
-                                            changes: Some(HashMap::from([(
-                                                params.text_document.uri.clone(),
-                                                vec![TextEdit {
-                                                    range: diag.range,
-                                                    new_text: c.to_string(),
-                                                }],
-                                            )])),
-                                            ..WorkspaceEdit::default()
-                                        }),
-                                        is_preferred: if corrections.len() == 1 { Some(true) } else { None },
-                                        ..CodeAction::default()
-                                    })
+        if !diagnostics_data_supported {
+            return Ok(None);
+        }
+
+        let bacon_ls = "bacon-ls".to_string();
+        let actions = params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.source.as_ref() == Some(&bacon_ls))
+            .flat_map(|diag| match &diag.data {
+                Some(data) => {
+                    if let Ok(DiagnosticData { corrections }) = serde_json::from_value::<DiagnosticData>(data.clone()) {
+                        corrections
+                            .iter()
+                            .map(|c| {
+                                CodeActionOrCommand::CodeAction(CodeAction {
+                                    title: c.label.clone(),
+                                    kind: Some(CodeActionKind::QUICKFIX),
+                                    diagnostics: Some(vec![diag.clone()]),
+                                    edit: Some(WorkspaceEdit {
+                                        changes: Some(HashMap::from([(
+                                            params.text_document.uri.clone(),
+                                            c.edits
+                                                .iter()
+                                                .map(|e: &CorrectionEdit| TextEdit {
+                                                    range: e.range,
+                                                    new_text: e.new_text.clone(),
+                                                })
+                                                .collect(),
+                                        )])),
+                                        ..WorkspaceEdit::default()
+                                    }),
+                                    is_preferred: if corrections.len() == 1 { Some(true) } else { None },
+                                    ..CodeAction::default()
                                 })
-                                .collect()
-                        } else {
-                            tracing::error!("deserialization failed: received {data:?} as diagnostic data",);
-                            vec![]
-                        }
-                    }
-                    None => {
-                        tracing::debug!("client doesn't support diagnostic data");
+                            })
+                            .collect()
+                    } else {
+                        tracing::error!("deserialization failed: received {data:?} as diagnostic data",);
                         vec![]
                     }
-                })
-                .collect::<Vec<_>>();
+                }
+                None => {
+                    tracing::debug!("client doesn't support diagnostic data");
+                    vec![]
+                }
+            })
+            .collect::<Vec<_>>();
 
-            Ok(Some(actions))
-        } else {
-            Ok(None)
-        }
+        Ok(Some(actions))
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
