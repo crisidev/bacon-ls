@@ -83,7 +83,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.pull_configuration().await;
+        // self.pull_configuration().await;
 
         let state = self.state.read().await;
         let Some(runtime) = state.backend.as_ref() else {
@@ -114,8 +114,10 @@ impl LanguageServer for BaconLs {
         if let Some(settings) = params.settings.as_object()
             && !settings.is_empty()
         {
-            tracing::debug!("using client provided settings");
-            self.adapt_to_settings(params.settings).await;
+            if let Some(settings) = settings.get("bacon_ls") {
+                tracing::debug!("using client provided settings");
+                self.adapt_to_settings(&settings).await;
+            }
         } else {
             tracing::debug!("settings is either not an object or is empty");
             self.pull_configuration().await;
