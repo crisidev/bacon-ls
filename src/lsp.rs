@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, DeleteFilesParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
-    InitializeResult, InitializedParams, MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    RenameFilesParams, ServerCapabilities, ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, ExecuteCommandOptions,
+    ExecuteCommandParams, InitializeParams, InitializeResult, InitializedParams, LSPAny, MessageType,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities, ServerInfo,
+    TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -78,6 +79,10 @@ impl LanguageServer for BaconLs {
                     },
                     resolve_provider: None,
                 })),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["bacon_ls.run".to_string()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -271,6 +276,19 @@ impl LanguageServer for BaconLs {
             .collect::<Vec<_>>();
 
         Ok(Some(actions))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> jsonrpc::Result<Option<LSPAny>> {
+        if params.command == "bacon_ls.check" {
+            let state = self.state.read().await;
+            if let Some(BackendRuntime::Cargo { .. }) = state.backend.as_ref() {
+                drop(state);
+                self.publish_cargo_diagnostics().await;
+            }
+            return Ok(None);
+        }
+
+        Err(jsonrpc::Error::method_not_found())
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
