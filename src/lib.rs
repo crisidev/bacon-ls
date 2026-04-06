@@ -93,6 +93,7 @@ pub(crate) struct CargoOptions {
     /// diagnostics instead of related information, regardless of client
     /// capability. When `None`, follow the client advertisement.
     pub(crate) separate_child_diagnostics: Option<bool>,
+    pub(crate) check_on_save: bool,
 }
 
 impl CargoOptions {
@@ -210,6 +211,12 @@ impl CargoOptions {
             self.separate_child_diagnostics = value.as_bool();
         }
 
+        if let Some(value) = cargo_obj.get("checkOnSave") {
+            self.check_on_save = value
+                .as_bool()
+                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+        }
+
         Ok(())
     }
 
@@ -229,6 +236,7 @@ impl Default for CargoOptions {
             package: None,
             refresh_interval_seconds: Some(Duration::from_secs(5)),
             separate_child_diagnostics: None,
+            check_on_save: true,
         }
     }
 }
@@ -637,6 +645,8 @@ impl BaconLs {
                     }
                     tracing::info!(build_folder = ?runtime.build_folder, "cargo backend initialized");
                     state.backend = Some(BackendRuntime::Cargo { config, runtime });
+                    drop(state);
+                    self.publish_cargo_diagnostics().await;
                 }
             }
         } else {
