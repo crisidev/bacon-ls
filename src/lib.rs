@@ -94,6 +94,7 @@ pub(crate) struct CargoOptions {
     /// capability. When `None`, follow the client advertisement.
     pub(crate) separate_child_diagnostics: Option<bool>,
     pub(crate) check_on_save: bool,
+    pub(crate) clear_diagnostics_on_check: bool,
 }
 
 impl CargoOptions {
@@ -217,6 +218,12 @@ impl CargoOptions {
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
         }
 
+        if let Some(value) = cargo_obj.get("clearDiagnosticsOnCheck") {
+            self.clear_diagnostics_on_check = value
+                .as_bool()
+                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+        }
+
         Ok(())
     }
 
@@ -237,6 +244,7 @@ impl Default for CargoOptions {
             refresh_interval_seconds: Some(Duration::from_secs(5)),
             separate_child_diagnostics: None,
             check_on_save: true,
+            clear_diagnostics_on_check: false,
         }
     }
 }
@@ -714,6 +722,7 @@ impl BaconLs {
         let cargo_env = config.env.clone();
         let cmd_args = config.build_command_args();
         let publish_mode = config.publish_mode;
+        let clear_diagnostics_on_check = config.clear_diagnostics_on_check;
         let build_folder = runtime.build_folder.clone();
         runtime.diagnostics_version += 1;
         let version = runtime.diagnostics_version;
@@ -738,6 +747,14 @@ impl BaconLs {
                 }
             },
         };
+
+        if clear_diagnostics_on_check {
+            for file in &runtime.files_with_diags {
+                self.client.publish_diagnostics(file.clone(), vec![], Some(version)).await;
+            }
+            runtime.files_with_diags.clear();
+        }
+
         drop(guard);
 
         let token = ProgressToken::Number(version);
