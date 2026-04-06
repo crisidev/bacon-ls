@@ -173,9 +173,11 @@ impl LanguageServer for BaconLs {
                     self.publish_bacon_diagnostics(&params.text_document.uri).await;
                 }
             }
-            BackendRuntime::Cargo { .. } => {
-                drop(state);
-                self.publish_cargo_diagnostics().await;
+            BackendRuntime::Cargo { config, .. } => {
+                if config.check_on_save {
+                    drop(state);
+                    self.publish_cargo_diagnostics().await;
+                }
             }
         }
     }
