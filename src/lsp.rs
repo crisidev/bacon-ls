@@ -31,17 +31,29 @@ impl LanguageServer for BaconLs {
         }
 
         let mut diagnostics_data_supported = false;
+        let mut related_information_supported = false;
         if let Some(TextDocumentClientCapabilities {
             publish_diagnostics:
                 Some(PublishDiagnosticsClientCapabilities {
-                    data_support: Some(true),
+                    data_support,
+                    related_information,
                     ..
                 }),
             ..
         }) = params.capabilities.text_document
         {
-            tracing::info!("client supports diagnostics data");
-            diagnostics_data_supported = true;
+            if data_support == Some(true) {
+                tracing::info!("client supports diagnostics data");
+                diagnostics_data_supported = true;
+            } else {
+                tracing::warn!("client does not support diagnostics data");
+            }
+            if related_information == Some(true) {
+                tracing::info!("client supports related information");
+                related_information_supported = true;
+            } else {
+                tracing::info!("client does not support related information");
+            }
         } else {
             tracing::warn!("client does not support diagnostics data");
         }
@@ -50,6 +62,7 @@ impl LanguageServer for BaconLs {
         state.project_root = project_root;
         state.workspace_folders = params.workspace_folders;
         state.diagnostics_data_supported = diagnostics_data_supported;
+        state.related_information_supported = related_information_supported;
         tracing::trace!("loaded state from lsp settings: {state:#?}");
         drop(state);
 
@@ -116,7 +129,7 @@ impl LanguageServer for BaconLs {
         {
             if let Some(settings) = settings.get("bacon_ls") {
                 tracing::debug!("using client provided settings");
-                self.adapt_to_settings(&settings).await;
+                self.adapt_to_settings(settings).await;
             }
         } else {
             tracing::debug!("settings is either not an object or is empty");

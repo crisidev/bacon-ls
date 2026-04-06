@@ -95,6 +95,7 @@ where
 #[derive(Debug, Deserialize)]
 struct CargoChildren {
     message: String,
+    level: String,
     spans: Vec<CargoSpan>,
 }
 
@@ -189,81 +190,47 @@ impl Cargo {
     async fn maybe_add_diagnostic(
         project_root: Option<&PathBuf>,
         message: &CargoMessage,
+        use_related_information: bool,
         tx: &flume::Sender<(Uri, Diagnostic)>,
     ) -> anyhow::Result<bool> {
         let rendered = ansi_regex::ansi_regex().replace_all(&message.rendered, "").into_owned();
         let rendered = rendered.trim_end_matches('\n');
 
-        // Children with primary spans become related information so editors can
-        // show them inline alongside the parent diagnostic. Children with no
-        // spans are dropped here — their text is already included in the
-        // parent's rendered message.
-        let related_information: Vec<DiagnosticRelatedInformation> = message
-            .children
-            .iter()
-            .flat_map(|child| {
-                child
-                    .spans
-                    .iter()
-                    .filter(|s| s.is_primary)
-                    .filter_map(|s| {
-                        Self::span_to_uri(project_root, s.project_span())
-                            .ok()
-                            .flatten()
-                            .map(|uri| DiagnosticRelatedInformation {
-                                location: Location {
-                                    uri,
-                                    range: Range::new(
-                                        Position::new(s.line_start - 1, s.column_start - 1),
-                                        Position::new(s.line_end - 1, s.column_end - 1),
-                                    ),
-                                },
-                                message: child.message.clone(),
-                            })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let related_information = if related_information.is_empty() {
-            None
-        } else {
-            Some(related_information)
-        };
-
-        tracing::debug!(info = ?related_information, "related information");
-
-        // Children may carry suggested_replacements (e.g. "prefix with _") even
-        // when the primary span has none. Group all MachineApplicable primary
-        // spans within each child into a single Correction so editors can apply
-        // them atomically (e.g. removing "Compact" from "{Compact, FmtSpan}"
-        // requires three separate byte-range deletions in one edit).
-        let child_corrections: Vec<Correction> = message
-            .children
-            .iter()
-            .filter_map(|child| {
-                let edits: Vec<CorrectionEdit> = child
-                    .spans
-                    .iter()
-                    .filter(|s| s.is_primary && s.is_machine_applicable())
-                    .filter_map(|s| {
-                        let new_text = s.suggested_replacement.as_deref()?;
-                        let resolved = s.project_span();
-                        Some(CorrectionEdit {
-                            range: Range::new(
-                                Position::new(resolved.line_start - 1, resolved.column_start - 1),
-                                Position::new(resolved.line_end - 1, resolved.column_end - 1),
-                            ),
-                            new_text: new_text.to_string(),
+        // When the client supports related information (e.g. VS Code), attach
+        // children with primary spans to the parent diagnostic as clickable
+        // links. Otherwise emit them as separate diagnostics so editors like
+        // neovim can display them directly.
+        let related_information = if use_related_information {
+            let info: Vec<DiagnosticRelatedInformation> = message
+                .children
+                .iter()
+                .flat_map(|child| {
+                    child
+                        .spans
+                        .iter()
+                        .filter(|s| s.is_primary)
+                        .filter_map(|s| {
+                            Self::span_to_uri(project_root, s.project_span())
+                                .ok()
+                                .flatten()
+                                .map(|uri| DiagnosticRelatedInformation {
+                                    location: Location {
+                                        uri,
+                                        range: Range::new(
+                                            Position::new(s.line_start - 1, s.column_start - 1),
+                                            Position::new(s.line_end - 1, s.column_end - 1),
+                                        ),
+                                    },
+                                    message: child.message.clone(),
+                                })
                         })
-                    })
-                    .collect();
-                if edits.is_empty() {
-                    None
-                } else {
-                    Some(Correction::from_multi(edits))
-                }
-            })
-            .collect();
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            if info.is_empty() { None } else { Some(info) }
+        } else {
+            None
+        };
 
         // A cargo message can have several primary spans pointing to different
         // project locations (e.g. conflicting trait impls, lifetime conflicts
@@ -287,7 +254,6 @@ impl Cargo {
                 .flatten()
                 .map(|text| Correction::from_single(range, text))
                 .into_iter()
-                .chain(child_corrections.iter().cloned())
                 .collect();
             let data = if corrections.is_empty() {
                 None
@@ -307,6 +273,67 @@ impl Cargo {
             tx.send_async((url, diagnostic)).await?;
             at_least_one = true;
         }
+
+        // When the client does not support related information, emit children
+        // with primary spans as separate diagnostics.
+        if !use_related_information {
+            for child in &message.children {
+                let Some(first_primary) = child.spans.iter().find(|s| s.is_primary) else {
+                    continue;
+                };
+                let resolved = first_primary.project_span();
+                let Some(url) = Self::span_to_uri(project_root, resolved)? else {
+                    continue;
+                };
+                let range = Range::new(
+                    Position::new(resolved.line_start - 1, resolved.column_start - 1),
+                    Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                );
+
+                // Group all MachineApplicable primary spans within this child
+                // into a single Correction so editors can apply them atomically
+                // (e.g. removing "Compact" from "{Compact, FmtSpan}" requires
+                // three separate byte-range deletions in one edit).
+                let edits: Vec<CorrectionEdit> = child
+                    .spans
+                    .iter()
+                    .filter(|s| s.is_primary && s.is_machine_applicable())
+                    .filter_map(|s| {
+                        let new_text = s.suggested_replacement.as_deref()?;
+                        let r = s.project_span();
+                        Some(CorrectionEdit {
+                            range: Range::new(
+                                Position::new(r.line_start - 1, r.column_start - 1),
+                                Position::new(r.line_end - 1, r.column_end - 1),
+                            ),
+                            new_text: new_text.to_string(),
+                        })
+                    })
+                    .collect();
+                let corrections = if edits.is_empty() {
+                    vec![]
+                } else {
+                    vec![Correction::from_multi(edits)]
+                };
+                let data = if corrections.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!(DiagnosticData { corrections }))
+                };
+                let diagnostic = Diagnostic {
+                    range,
+                    severity: Some(Self::parse_severity(&child.level)),
+                    source: Some(PKG_NAME.to_string()),
+                    message: child.message.clone(),
+                    data,
+                    ..Diagnostic::default()
+                };
+                tracing::trace!(uri = url.to_string(), ?diagnostic, "sending child diagnostic");
+                tx.send_async((url, diagnostic)).await?;
+                at_least_one = true;
+            }
+        }
+
         Ok(at_least_one)
     }
 
@@ -315,6 +342,7 @@ impl Cargo {
         cargo_env: &[(String, String)],
         project_root: Option<&PathBuf>,
         destination_folder: &Path,
+        use_related_information: bool,
         progress: &OngoingProgress<Bounded, NotCancellable>,
         tx: flume::Sender<(Uri, Diagnostic)>,
     ) -> anyhow::Result<()> {
@@ -347,9 +375,10 @@ impl Cargo {
                         if let Some(message) = message.message
                             && message.message_type == "diagnostic"
                         {
-                            at_least_one_diag |= Self::maybe_add_diagnostic(project_root, &message, &tx)
-                                .await
-                                .context("adding diagnostic")?;
+                            at_least_one_diag |=
+                                Self::maybe_add_diagnostic(project_root, &message, use_related_information, &tx)
+                                    .await
+                                    .context("adding diagnostic")?;
                         }
                     }
                     Err(e) => tracing::error!("error deserializing cargo line:\n{line}\n{e}"),
@@ -552,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn test_children_structure_for_related_information() {
+    fn test_children_structure_for_separate_diagnostics() {
         let line: CargoLine = serde_json::from_str(UNUSED_VARIABLE).unwrap();
         let message = line.message.unwrap();
         assert_eq!(message.message_type, "diagnostic");
@@ -571,11 +600,14 @@ mod tests {
             "primary span should already be project-local"
         );
 
-        // Two children: first has no spans (relied upon to be in rendered message),
-        // second has a primary span with a suggested_replacement.
+        // Two children: first has no spans (skipped — text in rendered message),
+        // second has a primary span with a suggested_replacement and becomes
+        // its own diagnostic.
         assert_eq!(message.children.len(), 2);
         assert!(message.children[0].spans.is_empty());
+        assert_eq!(message.children[0].level, "note");
         let help_child = &message.children[1];
+        assert_eq!(help_child.level, "help");
         assert_eq!(
             help_child.message,
             "if this is intentional, prefix it with an underscore"
@@ -584,8 +616,8 @@ mod tests {
         assert_eq!(help_spans.len(), 1);
         assert_eq!(help_spans[0].suggested_replacement.as_deref(), Some("_lol"));
 
-        // The child correction should surface as a code-action on the parent
-        // diagnostic — one Correction per child, grouping all its spans.
+        // The child's MachineApplicable span becomes a correction on the
+        // child's own diagnostic (not the parent's).
         let help_child_spans: Vec<_> = help_child
             .spans
             .iter()

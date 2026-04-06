@@ -89,6 +89,10 @@ pub(crate) struct CargoOptions {
     // Interval at which we refresh (send) cargo diagnostics we have so far
     // None means wait until the cargo command is fully done
     pub(crate) refresh_interval_seconds: Option<Duration>,
+    /// User override: when `Some(true)`, always emit children as separate
+    /// diagnostics instead of related information, regardless of client
+    /// capability. When `None`, follow the client advertisement.
+    pub(crate) separate_child_diagnostics: Option<bool>,
 }
 
 impl CargoOptions {
@@ -202,6 +206,10 @@ impl CargoOptions {
             }
         }
 
+        if let Some(value) = cargo_obj.get("separateChildDiagnostics") {
+            self.separate_child_diagnostics = value.as_bool();
+        }
+
         Ok(())
     }
 
@@ -220,6 +228,7 @@ impl Default for CargoOptions {
             extra_command_args: vec![],
             package: None,
             refresh_interval_seconds: Some(Duration::from_secs(5)),
+            separate_child_diagnostics: None,
         }
     }
 }
@@ -347,6 +356,7 @@ struct State {
     project_root: Option<PathBuf>,
     workspace_folders: Option<Vec<WorkspaceFolder>>,
     diagnostics_data_supported: bool,
+    related_information_supported: bool,
     backend: Option<BackendRuntime>,
 }
 
@@ -682,10 +692,14 @@ impl BaconLs {
         tracing::info!("starting cargo diagnostics run");
         let mut guard = self.state.write().await;
         let project_root = guard.project_root.clone();
+        let related_information_supported = guard.related_information_supported;
 
         let Some(BackendRuntime::Cargo { config, runtime }) = &mut guard.backend else {
             return;
         };
+        let use_related_information = !config
+            .separate_child_diagnostics
+            .unwrap_or(!related_information_supported);
         let cargo_command = config.command.clone();
         let cargo_env = config.env.clone();
         let cmd_args = config.build_command_args();
@@ -732,6 +746,7 @@ impl BaconLs {
             &cargo_env,
             project_root.as_ref(),
             &build_folder,
+            use_related_information,
             &progress,
             tx,
         );
