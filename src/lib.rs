@@ -750,7 +750,9 @@ impl BaconLs {
 
         if clear_diagnostics_on_check {
             for file in &runtime.files_with_diags {
-                self.client.publish_diagnostics(file.clone(), vec![], Some(version)).await;
+                self.client
+                    .publish_diagnostics(file.clone(), vec![], Some(version))
+                    .await;
             }
             runtime.files_with_diags.clear();
         }
@@ -941,7 +943,7 @@ impl BaconLs {
         if let PublishMode::QueueIfRunning = publish_mode {
             match cargo_rt.run_state {
                 CargoRunState::RunningPending => {
-                    cargo_rt.run_state = CargoRunState::Running;
+                    cargo_rt.run_state = CargoRunState::Idle;
                     drop(state);
                     tracing::info!("re-running cargo after queued request");
                     Box::pin(self.publish_cargo_diagnostics()).await;
