@@ -178,6 +178,7 @@ impl LanguageServer for BaconLs {
                 name: PKG_NAME.to_string(),
                 version: Some(PKG_VERSION.to_string()),
             }),
+            offset_encoding: None,
         })
     }
 
