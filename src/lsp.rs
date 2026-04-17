@@ -11,7 +11,9 @@ use ls_types::{
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
-use crate::{BackendChoice, BackendRuntime, BaconLs, Cargo, CorrectionEdit, DiagnosticData, PKG_NAME, PKG_VERSION};
+use crate::{
+    BackendChoice, BackendRuntime, BaconLs, Cargo, CargoOptions, CorrectionEdit, DiagnosticData, PKG_NAME, PKG_VERSION,
+};
 
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -103,10 +105,12 @@ impl LanguageServer for BaconLs {
     async fn initialized(&self, _: InitializedParams) {
         self.pull_configuration().await;
 
-        let state = self.state.read().await;
+        let mut state = self.state.write().await;
+        if state.backend.is_none() {
+            Self::init_cargo_backend(&mut state, CargoOptions::default());
+        }
         let Some(runtime) = state.backend.as_ref() else {
-            tracing::error!("No backend initialized");
-            return;
+            unreachable!();
         };
         let backend_chosen = runtime.backend_choice();
         drop(state);

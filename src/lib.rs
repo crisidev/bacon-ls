@@ -11,7 +11,7 @@ use flume::RecvError;
 use ls_types::{Diagnostic, DiagnosticSeverity, MessageType, ProgressToken, Range, Uri, WorkspaceFolder};
 use native::Cargo;
 use serde_json::{Map, Value};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::{Client, LspService, Server, jsonrpc};
@@ -647,14 +647,8 @@ impl BaconLs {
                             .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
                             .await;
                     }
-                    let mut runtime = CargoRuntime::default();
-                    if let Some(root) = &state.project_root {
-                        runtime.build_folder = root.clone();
-                    }
-                    tracing::info!(build_folder = ?runtime.build_folder, "cargo backend initialized");
-                    state.backend = Some(BackendRuntime::Cargo { config, runtime });
+                    Self::init_cargo_backend(&mut state, config);
                     drop(state);
-                    self.publish_cargo_diagnostics().await;
                 }
             }
         } else {
@@ -704,6 +698,15 @@ impl BaconLs {
                 None => unreachable!("backend is Some in this branch"),
             }
         }
+    }
+
+    fn init_cargo_backend(state: &mut RwLockWriteGuard<'_, State>, config: CargoOptions) {
+        let mut runtime = CargoRuntime::default();
+        if let Some(root) = &state.project_root {
+            runtime.build_folder = root.clone();
+        }
+        tracing::info!(build_folder = ?runtime.build_folder, "cargo backend initialized");
+        state.backend = Some(BackendRuntime::Cargo { config, runtime });
     }
 
     async fn publish_cargo_diagnostics(&self) {
