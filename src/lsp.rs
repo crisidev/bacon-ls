@@ -283,7 +283,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> jsonrpc::Result<Option<LSPAny>> {
-        if params.command == "bacon_ls.check" {
+        if params.command == "bacon_ls.run" {
             let state = self.state.read().await;
             if let Some(BackendRuntime::Cargo { .. }) = state.backend.as_ref() {
                 drop(state);
