@@ -319,6 +319,10 @@ impl BaconOptions {
 
         Ok(())
     }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Default for BaconOptions {
@@ -685,6 +689,7 @@ impl BaconLs {
                     tracing::debug!("cargo configuration updated");
                 }
                 Some(BackendRuntime::Bacon { config, .. }) => {
+                    config.reset();
                     if let Some(bacon_obj) = values.get("bacon").and_then(|v| v.as_object())
                         && let Err(e) = config.update_from_json_obj(bacon_obj)
                     {
