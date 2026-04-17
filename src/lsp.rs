@@ -101,7 +101,7 @@ impl LanguageServer for BaconLs {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        // self.pull_configuration().await;
+        self.pull_configuration().await;
 
         let state = self.state.read().await;
         let Some(runtime) = state.backend.as_ref() else {
