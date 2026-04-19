@@ -21,6 +21,13 @@ mod bacon;
 mod lsp;
 mod native;
 
+// Clippy canary — remove once bacon-ls + clippy integration is verified.
+#[allow(dead_code)]
+fn _clippy_canary() -> i32 {
+    let x = 42;
+    return x;
+}
+
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";

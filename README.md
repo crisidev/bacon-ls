@@ -27,8 +27,14 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
     * [Mason.nvim](#mason.nvim)
     * [Manual](#manual)
     * [Nix](#nix)
-* [Configuration - Native Cargo Backend](#configuration---native-cargo-backend)
-* [Configuration - Bacon Backend](#configuration---bacon-backend)
+* [Configuration](#configuration)
+    * [Choosing a backend](#choosing-a-backend)
+    * [Cargo backend options](#cargo-backend-options)
+    * [Bacon backend options](#bacon-backend-options)
+    * [Manually triggering diagnostics](#manually-triggering-diagnostics)
+    * [Changing configuration at runtime](#changing-configuration-at-runtime)
+* [Migrating from 0.26.x and earlier](#migrating-from-0.26.x-and-earlier)
+* [Editor setup](#editor-setup)
     * [Neovim - LazyVim](#neovim---lazyvim)
     * [Neovim - Manual](#neovim---manual)
     * [VSCode](#vscode)
@@ -52,15 +58,23 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 
 ## Features
 
-* Read diagnostics from produced by Bacon.
-* Push diagnostics to the LSP client on certain events like saving or files changes.
-* Precise diagnostics positions.
-* Ability to react to changes over document saves and changes that can be configured.
-* Replacement code actions as suggested by `clippy`.
-* Automatic validation of `bacon` preferences to ensure `bacon-ls` can work with them.
-* Start `bacon` in background based on user preferences (requires `bacon` 3.8.0).
-* Synchronize diagnostics for all open files. 
-* Support [cargo workspaces](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html).
+* Two backends to produce diagnostics:
+  * **Cargo** (default since 0.23.0): runs `cargo check` (or `cargo clippy`) directly with
+    JSON output, parses the messages and publishes them. Faster, lighter and zero
+    extra dependencies.
+  * **Bacon**: reads the export file produced by [Bacon](https://dystroy.org/bacon/)
+    and publishes those diagnostics. Useful when you already have `bacon` running.
+* Push diagnostics to the LSP client on file save, open, close and rename.
+* Precise diagnostic positions and macro-expanded spans pointed back at the
+  call-site.
+* Replacement code actions as suggested by `cargo` / `clippy`.
+* Streaming partial publishes during a long `cargo` run (configurable refresh
+  interval) so the editor lights up as soon as the first errors are known.
+* Manual `bacon_ls.run` LSP command to re-trigger a check on demand.
+* Bacon backend extras: automatic validation of `bacon` preferences, optional
+  creation of the preferences file, optional automatic background `bacon`
+  process (requires `bacon` 3.8.0), open-file diagnostic synchronization.
+* Support for [cargo workspaces](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html).
 
 ### Limitations
 
@@ -103,52 +117,93 @@ Both [bacon](https://github.com/Canop/bacon/blob/main/flake.nix) and [bacon-ls](
 
 ## Configuration
 
-```json
+`bacon-ls` 🐽 reads its configuration from the `bacon_ls` section of the LSP
+client settings. All fields are optional — if you provide nothing the cargo
+backend starts with sensible defaults. The complete schema is:
+
+```jsonc
 {
-    "bacon_ls": {
-      // "cargo" or "bacon" — inferred from which section is present if omitted
-      "backend": "cargo",
+  "bacon_ls": {
+    // "cargo" or "bacon". Optional — see "Choosing a backend" below.
+    "backend": "cargo",
 
-      "cargo": {
-        "command": "check",                    // "check" or "clippy"
-        "features": [],                        // list of cargo features
-        "package": null,                       // -p <crate_name>
-        "extraCommandArguments": [],           // extra args passed to cargo
-        "env": {},                             // environment variables
-        "cancelRunning": true,                 // cancel previous run on new save
-        "refreshIntervalSeconds": 5,           // partial publish interval (null = wait until done)
-        "separateChildDiagnostics": null,      // true/false overrides client capability, null = auto
-        "checkOnSave": true,                   // trigger cargo check on file save
-        "clearDiagnosticsOnCheck": false        // clear existing diagnostics before each run
-      },
+    "cargo": {
+      "command": "check",                 // "check" or "clippy"
+      "features": [],                     // cargo --features list
+      "package": null,                    // cargo -p <package>
+      "extraCommandArguments": [],        // appended verbatim after the cargo command
+      "env": {},                          // extra environment variables (string -> string)
+      "cancelRunning": true,              // cancel an in-flight run when a new one is triggered
+      "refreshIntervalSeconds": 5,        // partial publish interval; null/negative = wait until done
+      "separateChildDiagnostics": null,   // override "related information" support; null = follow client
+      "checkOnSave": true,                // trigger cargo on textDocument/didSave
+      "clearDiagnosticsOnCheck": false    // clear existing diagnostics before each run
+    },
 
-      "bacon": {
-        "locationsFile": ".bacon-locations",
-        "runInBackground": true,
-        "runInBackgroundCommand": "bacon",
-        "runInBackgroundCommandArguments": "--headless -j bacon-ls",
-        "validatePreferences": true,
-        "createPreferencesFile": true,
-        "synchronizeAllOpenFilesWaitMillis": 2000,
-        "updateOnSave": true,
-        "updateOnSaveWaitMillis": 1000
-      }
+    "bacon": {
+      "locationsFile": ".bacon-locations",
+      "runInBackground": true,
+      "runInBackgroundCommand": "bacon",
+      "runInBackgroundCommandArguments": "--headless -j bacon-ls",
+      "validatePreferences": true,
+      "createPreferencesFile": true,
+      "synchronizeAllOpenFilesWaitMillis": 2000,
+      "updateOnSave": true,
+      "updateOnSaveWaitMillis": 1000
     }
   }
+}
 ```
 
-### Configuration - Native Cargo Backend
+### Choosing a backend
 
-This backend will just run `cargo` with json diagnostics enabled, parse them and update diagnostics.
+The backend is chosen once, when the server initializes, and cannot be switched
+at runtime (you have to restart the server). The choice is resolved as follows:
 
-**NOTE: from `bacon-ls` v0.23.0, this is the default backend because it is faster and lighter than running `bacon`.
+1. If `bacon_ls.backend` is set to `"cargo"` or `"bacon"`, that wins.
+2. Otherwise, if only one of `bacon_ls.cargo` or `bacon_ls.bacon` is present in
+   the settings, that backend is selected.
+3. Otherwise (both sections present without an explicit `backend`, or no
+   settings at all), the default is **cargo**.
 
-### Configuration - Bacon Backend
+Providing both `cargo` and `bacon` sections without an explicit `backend`
+key is reported as a configuration error.
 
-**NOTE: This works only with `bacon-ls` is configured with `initOptions = { useBaconBackend = true }`**
+### Cargo backend options
 
-Configure Bacon export settings with `bacon-ls` 🐽 export format and proper span support in the `bacon` preference file.
-To find where the file should be saved, you can use the command `bacon --prefs`:
+Available since `bacon-ls` 0.23.0, default since 0.26.0. Runs cargo directly with
+`--message-format=json-diagnostic-rendered-ansi`, parses the stream and publishes
+diagnostics — no `bacon` process required.
+
+* `command` (default `"check"`): which cargo subcommand to run. Most useful values
+  are `"check"` and `"clippy"`.
+* `features`: list of features passed as `--features a,b,c`.
+* `package`: when set, passed as `-p <package>` (useful in workspaces).
+* `extraCommandArguments`: appended verbatim after the subcommand. Use this for
+  e.g. `["--workspace", "--all-targets", "--all-features"]`.
+* `env`: map of additional environment variables for the cargo invocation.
+* `cancelRunning` (default `true`): when a new run is requested while another is
+  still running, cancel the in-flight one. Set to `false` to instead queue at most
+  one follow-up run after the current one completes.
+* `refreshIntervalSeconds` (default `5`): how often to publish a partial snapshot
+  of the diagnostics gathered so far while cargo is still running. Set to `null`
+  or a negative number to only publish once cargo has finished.
+* `separateChildDiagnostics` (default `null`): cargo emits some hints as children
+  of a parent diagnostic. When `null` we follow the client's
+  `relatedInformation` capability; set to `true` to always emit children as
+  standalone diagnostics, `false` to always nest them.
+* `checkOnSave` (default `true`): trigger a cargo run on `textDocument/didSave`.
+  Set to `false` if you only want to drive runs manually via `bacon_ls.run`.
+* `clearDiagnosticsOnCheck` (default `false`): publish empty diagnostics for all
+  files that previously had any before starting the new run. Useful if you want
+  the editor's diagnostic counters to drop to zero immediately at the start of
+  a check.
+
+### Bacon backend options
+
+Reads diagnostics from the file produced by Bacon's `export-locations` feature.
+Configure Bacon with the `bacon-ls` 🐽 export format in the `bacon` preference
+file (`bacon --prefs` shows where it lives):
 
 ```toml
 [jobs.bacon-ls]
@@ -171,22 +226,101 @@ line_format = """\
 path = ".bacon-locations"
 ```
 
-**NOTE: `bacon` MUST be running to generate the export locations with the `bacon-ls` job: `bacon -j bacon-ls`.
-From `bacon-ls` 0.10.0, this is done automatically if the option `runBaconInBackground` is set to true.**
+`bacon` itself must be running to keep the export file fresh
+(`bacon -j bacon-ls`). When `runInBackground` is `true` (the default since
+0.10.0), `bacon-ls` starts and supervises it for you.
 
-The language server can be configured using the appropriate LSP protocol and
-supports the following values:
+* `locationsFile` (default `".bacon-locations"`): bacon export file to read.
+* `runInBackground` (default `true`): start `bacon` automatically and tear it
+  down on shutdown.
+* `runInBackgroundCommand` (default `"bacon"`): command to spawn. Override if
+  `bacon` is not in `$PATH`.
+* `runInBackgroundCommandArguments` (default `"--headless -j bacon-ls"`):
+  command-line arguments passed to the background `bacon` process.
+* `validatePreferences` (default `true`): verify the bacon preferences file
+  contains a working `bacon-ls` job and matching export configuration. Errors
+  are surfaced to the LSP client.
+* `createPreferencesFile` (default `true`): if validation fails because the
+  preferences file is missing, generate one with the `bacon-ls` job and export
+  defined.
+* `synchronizeAllOpenFilesWaitMillis` (default `2000`): how often the background
+  loop re-publishes diagnostics for every open file (so a fix in file A also
+  clears the now-stale error in file B).
+* `updateOnSave` (default `true`): re-publish diagnostics on
+  `textDocument/didSave`.
+* `updateOnSaveWaitMillis` (default `1000`): delay before reading the locations
+  file after a save, to give bacon time to finish its run.
 
-* `locationsFile` Bacon export filename (default: `.bacon-locations`).
-* `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
-* `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
-* `useBaconBackend` if `true`, the backend spawning `bacon` will be used instead of the native (faster) Cargo backend.
-* `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
-* `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
-* `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
-* `runBaconInBackgroundCommand`: Path to the command used to run `bacon` in the background (defaults to find in `$PATH`).
-* `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
-* `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
+### Manually triggering diagnostics
+
+`bacon-ls` 🐽 registers a single `workspace/executeCommand` named `bacon_ls.run`.
+Invoking it triggers an immediate cargo run when the cargo backend is active
+(the bacon backend ignores it — there is nothing for it to drive directly).
+
+This is how clients can offer a "run check now" command without relying on save
+events. Example from a Neovim mapping:
+
+```lua
+vim.keymap.set("n", "<leader>cb", function()
+  vim.lsp.buf.execute_command({ command = "bacon_ls.run" })
+end, { desc = "bacon-ls: run check" })
+```
+
+### Changing configuration at runtime
+
+`bacon-ls` honours `workspace/didChangeConfiguration` and re-reads its settings,
+but with one important constraint: **the backend choice is fixed for the
+lifetime of the process**. Trying to switch from `cargo` to `bacon` (or vice
+versa) without restarting the server is reported as an error to the client and
+ignored. All other options (cargo command, features, bacon update interval, …)
+can be changed live.
+
+## Migrating from 0.26.x and earlier
+
+PR [#113](https://github.com/crisidev/bacon-ls/pull/113) reorganised the
+configuration into per-backend sections. If you were on 0.26.x or earlier, the
+following changes apply:
+
+* `useBaconBackend` is gone. Replace it with either the explicit
+  `"backend": "bacon"` or simply by providing a `"bacon": { ... }` section.
+* All `runBaconInBackground*`, `validateBaconPreferences`,
+  `createBaconPreferencesFile`, `synchronizeAllOpenFilesWaitMillis`,
+  `updateOnSave`, `updateOnSaveWaitMillis` and `locationsFile` keys have moved
+  inside `bacon_ls.bacon.*` and dropped the `Bacon` prefix where it was
+  redundant (e.g. `runBaconInBackground` → `bacon.runInBackground`,
+  `validateBaconPreferences` → `bacon.validatePreferences`).
+* All cargo-related keys live under `bacon_ls.cargo.*`.
+* The backend can no longer be changed live — restart the server to switch.
+
+Old config:
+
+```jsonc
+{
+  "bacon_ls": {
+    "useBaconBackend": true,
+    "runBaconInBackground": true,
+    "validateBaconPreferences": true,
+    "updateOnSave": true
+  }
+}
+```
+
+New equivalent:
+
+```jsonc
+{
+  "bacon_ls": {
+    "backend": "bacon",
+    "bacon": {
+      "runInBackground": true,
+      "validatePreferences": true,
+      "updateOnSave": true
+    }
+  }
+}
+```
+
+## Editor setup
 
 ### Neovim - LazyVim
 
@@ -208,13 +342,20 @@ is set to `true`.
 
 ```lua
 vim.lsp.config('bacon-ls', {
-    init_options = {
-        updateOnSave = true 
-        updateOnSaveWaitMillis = 1000
-        ...
-    }
+    settings = {
+        bacon_ls = {
+            backend = "cargo",
+            cargo = {
+                command = "clippy",
+                checkOnSave = true,
+            },
+        },
+    },
 })
 ```
+
+Settings can also be passed via `init_options` as the same `bacon_ls = { ... }`
+table — the server reads from both sources.
 
 When using [codesettings](https://github.com/mrjones2014/codesettings.nvim)
 to manage project local settings
@@ -226,7 +367,7 @@ vim.lsp.config("*", {
     if config.name == "bacon_ls" then
       local settings = codesettings.local_settings()["_settings"]["bacon_ls"]
       if settings ~= nil then
-        config["settings"]["bacon_ls"] = sett6ings
+        config["settings"]["bacon_ls"] = settings
         vim.print(config["settings"]["bacon_ls"])
       end
       return config
@@ -286,6 +427,12 @@ diagnostics = { enable = false }
 
 [language-server.bacon-ls]
 command = "bacon-ls"
+
+[language-server.bacon-ls.config.bacon_ls]
+backend = "cargo"
+
+[language-server.bacon-ls.config.bacon_ls.cargo]
+command = "clippy"
 ```
 
 ## Troubleshooting
@@ -317,15 +464,29 @@ Enable debug logging in the extension options.
 
 ## How does it work?
 
-`bacon-ls` 🐽 reads the diagnostics location list generated
-by [Bacon's export-locations](https://dystroy.org/bacon/config/#export-locations)
-and exposes them on STDIO over the LSP protocol to be consumed
-by the client diagnostics.
+`bacon-ls` 🐽 speaks LSP over STDIO and publishes diagnostics to the client via
+`textDocument/publishDiagnostics`. How those diagnostics are produced depends on
+the active backend.
 
-It requires [Bacon](https://dystroy.org/bacon/) to be running alongside
-to ensure regular updates of the export locations.
+**Cargo backend (default).** On each trigger (initial start, file save, or a
+manual `bacon_ls.run`), `bacon-ls` runs `cargo check` (or `cargo clippy`) with
+`--message-format=json-diagnostic-rendered-ansi` from the project root. The JSON
+stream is parsed as it arrives, spans from macro expansions are walked back to
+the original call site, and diagnostics are published per file. With
+`refreshIntervalSeconds` set, partial snapshots are pushed while cargo is still
+running so the editor shows errors as soon as they are known. The previous run
+is cancelled when a newer one starts (or queued, depending on `cancelRunning`).
 
-The LSP client reads them as response to `textDocument/diagnostic` and `workspace/diagnostic`.
+**Bacon backend.** [Bacon](https://dystroy.org/bacon/) runs in a watch loop and
+writes diagnostics to its export file (default `.bacon-locations`) using a
+custom `line_format`. `bacon-ls` reads that file on save / open / close / rename
+events and on a periodic open-file synchronization tick, parses the lines, and
+publishes the resulting diagnostics. When `runInBackground` is on, `bacon-ls`
+also spawns and supervises the `bacon` process itself.
+
+Both backends share the same code-actions pipeline: when a diagnostic carries a
+suggested replacement, it is exposed as a `quickfix` code action via
+`textDocument/codeAction`.
 
 ## Thanks
 

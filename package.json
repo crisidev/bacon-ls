@@ -34,6 +34,11 @@
         "category": "BaconLs",
         "command": "bacon-ls.restart",
         "title": "Restart"
+      },
+      {
+        "category": "BaconLs",
+        "command": "bacon-ls.run",
+        "title": "Run check"
       }
     ],
     "configuration": {
@@ -44,30 +49,6 @@
           "scope": "machine-overridable",
           "type": "string",
           "description": "Path to the `bacon-ls` binary. If empty the bundled binary will be used."
-        },
-        "bacon-ls.locationsFile": {
-          "scope": "machine-overridable",
-          "type": "string",
-          "description": "Bacon export filename.",
-          "default": ".bacon-locations"
-        },
-        "bacon-ls.updateOnSave": {
-          "scope": "machine-overridable",
-          "type": "boolean",
-          "description": "Try to update diagnostics every time the file is saved.",
-          "default": true
-        },
-        "bacon-ls.updateOnSaveWaitMillis": {
-          "scope": "machine-overridable",
-          "type": "number",
-          "description": "How many milliseconds to wait before updating diagnostics after a save.",
-          "default": 1000
-        },
-        "bacon-ls.updateOnChange": {
-          "scope": "machine-overridable",
-          "type": "boolean",
-          "description": "Try to update diagnostics every time the file changes.",
-          "default": false
         },
         "bacon-ls.logLevel": {
           "scope": "window",
@@ -82,6 +63,152 @@
           ],
           "default": "off",
           "markdownDescription": "Logging level of the language server. Logs will be saved in a file called bacon-ls.log if the level is not 'off'."
+        },
+        "bacon_ls.backend": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "enum": [
+            "cargo",
+            "bacon"
+          ],
+          "default": "cargo",
+          "markdownDescription": "Which backend produces diagnostics. Cannot be changed at runtime — restart the server to switch."
+        },
+        "bacon_ls.cargo.command": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "enum": [
+            "check",
+            "clippy"
+          ],
+          "default": "check",
+          "description": "Cargo backend: which cargo subcommand to run."
+        },
+        "bacon_ls.cargo.features": {
+          "scope": "machine-overridable",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Cargo backend: list of cargo features (passed as --features a,b,c)."
+        },
+        "bacon_ls.cargo.package": {
+          "scope": "machine-overridable",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Cargo backend: when set, passed as -p <package> (useful in workspaces)."
+        },
+        "bacon_ls.cargo.extraCommandArguments": {
+          "scope": "machine-overridable",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Cargo backend: extra arguments appended verbatim after the cargo subcommand."
+        },
+        "bacon_ls.cargo.env": {
+          "scope": "machine-overridable",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Cargo backend: extra environment variables (string -> string) for the cargo invocation."
+        },
+        "bacon_ls.cargo.cancelRunning": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Cargo backend: cancel an in-flight run when a new one is triggered. When false, queue at most one follow-up run."
+        },
+        "bacon_ls.cargo.refreshIntervalSeconds": {
+          "scope": "machine-overridable",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": 5,
+          "description": "Cargo backend: partial publish interval in seconds. Set to null (or negative) to only publish once cargo has finished."
+        },
+        "bacon_ls.cargo.separateChildDiagnostics": {
+          "scope": "machine-overridable",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "description": "Cargo backend: override 'related information' support. null = follow client capability; true = always emit children as standalone diagnostics; false = always nest them."
+        },
+        "bacon_ls.cargo.checkOnSave": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Cargo backend: trigger cargo on file save."
+        },
+        "bacon_ls.cargo.clearDiagnosticsOnCheck": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": false,
+          "description": "Cargo backend: clear existing diagnostics before each run."
+        },
+        "bacon_ls.bacon.locationsFile": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": ".bacon-locations",
+          "description": "Bacon backend: bacon export file to read."
+        },
+        "bacon_ls.bacon.runInBackground": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Bacon backend: start bacon automatically and tear it down on shutdown."
+        },
+        "bacon_ls.bacon.runInBackgroundCommand": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": "bacon",
+          "description": "Bacon backend: command used to start bacon in the background."
+        },
+        "bacon_ls.bacon.runInBackgroundCommandArguments": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": "--headless -j bacon-ls",
+          "description": "Bacon backend: command-line arguments passed to the background bacon process."
+        },
+        "bacon_ls.bacon.validatePreferences": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Bacon backend: verify that bacon preferences contain a working bacon-ls job and matching export configuration."
+        },
+        "bacon_ls.bacon.createPreferencesFile": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Bacon backend: when validation finds no preferences file, generate one with the bacon-ls job and export defined."
+        },
+        "bacon_ls.bacon.synchronizeAllOpenFilesWaitMillis": {
+          "scope": "machine-overridable",
+          "type": "integer",
+          "default": 2000,
+          "description": "Bacon backend: how often (in ms) the background loop re-publishes diagnostics for every open file."
+        },
+        "bacon_ls.bacon.updateOnSave": {
+          "scope": "machine-overridable",
+          "type": "boolean",
+          "default": true,
+          "description": "Bacon backend: re-publish diagnostics on file save."
+        },
+        "bacon_ls.bacon.updateOnSaveWaitMillis": {
+          "scope": "machine-overridable",
+          "type": "integer",
+          "default": 1000,
+          "description": "Bacon backend: delay in ms before reading the locations file after a save."
         }
       }
     }

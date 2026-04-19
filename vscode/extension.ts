@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as os from "os";
 
 import {
+  ExecuteCommandRequest,
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
@@ -10,6 +11,15 @@ import {
 
 let client: LanguageClient | undefined;
 
+// Settings that change how the server itself is launched. These cannot be
+// applied without a restart.
+const RESTART_ON_CHANGE = [
+  "bacon-ls.path",
+  "bacon-ls.logLevel",
+  // The server cannot switch backends at runtime — restart is the only path.
+  "bacon_ls.backend",
+];
+
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
@@ -17,32 +27,23 @@ export async function activate(
 
   const outputChannel = vscode.window.createOutputChannel(name);
 
-  // context.subscriptions holds the disposables we want called
-  // when the extension is deactivated
   context.subscriptions.push(outputChannel);
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(
       async (e: vscode.ConfigurationChangeEvent) => {
-        const restartTriggeredBy = [
-          "bacon-ls.updateOnSave",
-          "bacon-ls.updateOnSaveWaitMillis",
-          "bacon-ls.updateOnChange",
-          "bacon-ls.locationsFile",
-          "bacon-ls.logLevel",
-          "bacon-ls.path",
-        ].find((s) => e.affectsConfiguration(s));
-
-        if (restartTriggeredBy) {
+        if (RESTART_ON_CHANGE.some((s) => e.affectsConfiguration(s))) {
           await vscode.commands.executeCommand("bacon-ls.restart");
         }
+        // All other bacon_ls.* changes are picked up by the server through
+        // workspace/didChangeConfiguration, sent automatically by
+        // vscode-languageclient because of synchronize.configurationSection.
       },
     ),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("bacon-ls.restart", async () => {
-      // can't stop if the client has previously failed to start
       if (client && client.needsStop()) {
         await client.stop();
       }
@@ -56,15 +57,28 @@ export async function activate(
         return;
       }
 
-      // Start the client. This will also launch the server
       await client.start();
     }),
   );
 
-  // use the command as our single entry point for (re)starting
-  // the client and server. This ensures at activation time we
-  // start and handle errors in a way that's consistent with the
-  // other triggers
+  context.subscriptions.push(
+    vscode.commands.registerCommand("bacon-ls.run", async () => {
+      if (!client || !client.isRunning()) {
+        vscode.window.showWarningMessage("bacon-ls is not running");
+        return;
+      }
+      try {
+        await client.sendRequest(ExecuteCommandRequest.type, {
+          command: "bacon_ls.run",
+        });
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `bacon-ls.run failed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }),
+  );
+
   await vscode.commands.executeCommand("bacon-ls.restart");
 }
 
@@ -75,12 +89,12 @@ async function createClient(
 ): Promise<LanguageClient> {
   const env = { ...process.env };
 
-  let config = vscode.workspace.getConfiguration("bacon-ls");
-  let path = await getServerPath(context, config);
+  const extensionConfig = vscode.workspace.getConfiguration("bacon-ls");
+  const path = await getServerPath(context, extensionConfig);
 
   outputChannel.appendLine("Using bacon-ls server " + path);
 
-  env.RUST_LOG = config.get("logLevel");
+  env.RUST_LOG = extensionConfig.get("logLevel");
 
   const run: Executable = {
     command: path,
@@ -89,25 +103,23 @@ async function createClient(
 
   const serverOptions: ServerOptions = {
     run: run,
-    // used when launched in debug mode
     debug: run,
   };
 
   const clientOptions: LanguageClientOptions = {
-    // Register the server for all documents
     documentSelector: [
       { scheme: "untitled" },
       { scheme: "file", pattern: "**" },
-      // source control commit message
       { scheme: "vscode-scm" },
     ],
     outputChannel: outputChannel,
     traceOutputChannel: outputChannel,
-    initializationOptions: {
-      updateOnSave: config.get("updateOnSave"),
-      updateOnSaveWaitMillis: config.get("updateOnSaveWaitMillis"),
-      updateOnChange: config.get("updateOnChange"),
-      locationsFile: config.get("locationsFile"),
+    // Forward server-side settings through the standard
+    // workspace/configuration pull (which vscode-languageclient handles by
+    // mapping section -> getConfiguration(section)) and notify the server on
+    // changes via workspace/didChangeConfiguration.
+    synchronize: {
+      configurationSection: "bacon_ls",
     },
   };
 
