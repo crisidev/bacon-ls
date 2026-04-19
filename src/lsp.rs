@@ -109,10 +109,11 @@ impl LanguageServer for BaconLs {
         if state.backend.is_none() {
             Self::init_cargo_backend(&mut state, CargoOptions::default());
         }
-        let Some(runtime) = state.backend.as_ref() else {
-            unreachable!();
-        };
-        let backend_chosen = runtime.backend_choice();
+        let backend_chosen = state
+            .backend
+            .as_ref()
+            .expect("backend initialized above")
+            .backend_choice();
         drop(state);
 
         tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized with backend: {backend_chosen:?}");
@@ -149,10 +150,17 @@ impl LanguageServer for BaconLs {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         tracing::trace!("client sent didOpen request");
         let mut state = self.state.write().await;
-        if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
-            runtime.open_files.insert(params.text_document.uri.clone());
-            drop(state);
-            self.publish_bacon_diagnostics(&params.text_document.uri).await;
+        match &mut state.backend {
+            Some(BackendRuntime::Bacon { runtime, .. }) => {
+                runtime.open_files.insert(params.text_document.uri.clone());
+                drop(state);
+                self.publish_bacon_diagnostics(&params.text_document.uri).await;
+            }
+            Some(BackendRuntime::Cargo { .. }) => {
+                drop(state);
+                self.publish_cargo_diagnostics().await;
+            }
+            None => {}
         }
     }
 

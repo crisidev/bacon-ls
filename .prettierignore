@@ -4,6 +4,8 @@ node_modules
 .vscode-test
 out
 target
+src/testdata
+flake.lock
 CHANGELOG.md
 README.md
 README-0.4.md
