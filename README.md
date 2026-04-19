@@ -101,13 +101,49 @@ bacon 3.8.0  # make sure you have at least 3.8.0
 
 Both [bacon](https://github.com/Canop/bacon/blob/main/flake.nix) and [bacon-ls](./flake.nix) can be consumed from their Nix flakes.
 
-## Configuration - Native Cargo Backend
+## Configuration
+
+```json
+{
+    "bacon_ls": {
+      // "cargo" or "bacon" — inferred from which section is present if omitted
+      "backend": "cargo",
+
+      "cargo": {
+        "command": "check",                    // "check" or "clippy"
+        "features": [],                        // list of cargo features
+        "package": null,                       // -p <crate_name>
+        "extraCommandArguments": [],           // extra args passed to cargo
+        "env": {},                             // environment variables
+        "cancelRunning": true,                 // cancel previous run on new save
+        "refreshIntervalSeconds": 5,           // partial publish interval (null = wait until done)
+        "separateChildDiagnostics": null,      // true/false overrides client capability, null = auto
+        "checkOnSave": true,                   // trigger cargo check on file save
+        "clearDiagnosticsOnCheck": false        // clear existing diagnostics before each run
+      },
+
+      "bacon": {
+        "locationsFile": ".bacon-locations",
+        "runInBackground": true,
+        "runInBackgroundCommand": "bacon",
+        "runInBackgroundCommandArguments": "--headless -j bacon-ls",
+        "validatePreferences": true,
+        "createPreferencesFile": true,
+        "synchronizeAllOpenFilesWaitMillis": 2000,
+        "updateOnSave": true,
+        "updateOnSaveWaitMillis": 1000
+      }
+    }
+  }
+```
+
+### Configuration - Native Cargo Backend
 
 This backend will just run `cargo` with json diagnostics enabled, parse them and update diagnostics.
 
 **NOTE: from `bacon-ls` v0.23.0, this is the default backend because it is faster and lighter than running `bacon`.
 
-## Configuration - Bacon Backend
+### Configuration - Bacon Backend
 
 **NOTE: This works only with `bacon-ls` is configured with `initOptions = { useBaconBackend = true }`**
 
@@ -141,16 +177,16 @@ From `bacon-ls` 0.10.0, this is done automatically if the option `runBaconInBack
 The language server can be configured using the appropriate LSP protocol and
 supports the following values:
 
-- `locationsFile` Bacon export filename (default: `.bacon-locations`).
-- `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
-- `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
-- `useBaconBackend` if `true`, the backend spawning `bacon` will be used instead of the native (faster) Cargo backend.
-- `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
-- `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
-- `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
-- `runBaconInBackgroundCommand`: Path to the command used to run `bacon` in the background (defaults to find in `$PATH`).
-- `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
-- `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
+* `locationsFile` Bacon export filename (default: `.bacon-locations`).
+* `updateOnSave` Try to update diagnostics every time the file is saved (default: true).
+* `updateOnSaveWaitMillis` How many milliseconds to wait before updating diagnostics after a save (default: 1000).
+* `useBaconBackend` if `true`, the backend spawning `bacon` will be used instead of the native (faster) Cargo backend.
+* `validateBaconPreferences`: Try to validate that `bacon` preferences are setup correctly to work with `bacon-ls` (default: true).
+* `createBaconPreferencesFile`: If no `bacon` preferences file is found, create a new preferences file with the `bacon-ls` job definition (default: true).
+* `runBaconInBackground`: Run `bacon` in background for the `bacon-ls` job (default: true)
+* `runBaconInBackgroundCommand`: Path to the command used to run `bacon` in the background (defaults to find in `$PATH`).
+* `runBaconInBackgroundCommandArguments`: Command line arguments to pass to `bacon` running in background (default "--headless -j bacon-ls")
+* `synchronizeAllOpenFilesWaitMillis`: How many milliseconds to wait between background diagnostics check to synchronize all open files (default: 2000).
 
 ### Neovim - LazyVim
 
@@ -180,6 +216,27 @@ vim.lsp.config('bacon-ls', {
 })
 ```
 
+When using [codesettings](https://github.com/mrjones2014/codesettings.nvim)
+to manage project local settings
+
+```
+vim.lsp.config("*", {
+  before_init = function(_, config)
+    local codesettings = require("codesettings")
+    if config.name == "bacon_ls" then
+      local settings = codesettings.local_settings()["_settings"]["bacon_ls"]
+      if settings ~= nil then
+        config["settings"]["bacon_ls"] = sett6ings
+        vim.print(config["settings"]["bacon_ls"])
+      end
+      return config
+    end
+
+    return codesettings.with_local_settings(config.name, config)
+  end,
+})
+```
+
 For `rust-analyzer`, these 2 options must be turned off:
 
 ```lua
@@ -204,11 +261,12 @@ call coc#config('languageserver', {
       \   'command': '~/.cargo/bin/bacon-ls',
       \   'filetypes': ['rust'],
       \   'rootPatterns': ['.git/', 'Cargo.lock', 'Cargo.toml'],
-      \   'initializationOptions': {
-      \     'updateOnSave': v:true, 
-      \     'updateOnSaveWaitMillis': 1000,
-      \   },
-      \   'settings': {}
+      \   'settings': {
+      \    'cargo': {
+      \      'cancelRunning': true,
+      \    }
+      \   }
+      \  }
       \ }
 \ })
 ```
@@ -229,7 +287,6 @@ diagnostics = { enable = false }
 [language-server.bacon-ls]
 command = "bacon-ls"
 ```
-
 
 ## Troubleshooting
 

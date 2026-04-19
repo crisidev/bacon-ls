@@ -1,17 +1,19 @@
-use std::{collections::HashMap, env, time::Duration};
+use std::collections::HashMap;
 
 use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-    CodeActionResponse, DeleteFilesParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities,
-    ServerInfo, TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    CodeActionResponse, DeleteFilesParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, ExecuteCommandOptions,
+    ExecuteCommandParams, InitializeParams, InitializeResult, InitializedParams, LSPAny, MessageType,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities, ServerInfo,
+    TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
     WorkDoneProgressOptions, WorkspaceEdit,
 };
-use tokio::{fs, time::Instant};
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
-use crate::{Backend, BaconLs, Cargo, DiagnosticData, PKG_NAME, PKG_VERSION, bacon::Bacon};
+use crate::{
+    BackendChoice, BackendRuntime, BaconLs, Cargo, CargoOptions, CorrectionEdit, DiagnosticData, PKG_NAME, PKG_VERSION,
+};
 
 impl LanguageServer for BaconLs {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -32,17 +34,29 @@ impl LanguageServer for BaconLs {
         }
 
         let mut diagnostics_data_supported = false;
+        let mut related_information_supported = false;
         if let Some(TextDocumentClientCapabilities {
             publish_diagnostics:
                 Some(PublishDiagnosticsClientCapabilities {
-                    data_support: Some(true),
+                    data_support,
+                    related_information,
                     ..
                 }),
             ..
         }) = params.capabilities.text_document
         {
-            tracing::info!("client supports diagnostics data");
-            diagnostics_data_supported = true;
+            if data_support == Some(true) {
+                tracing::info!("client supports diagnostics data");
+                diagnostics_data_supported = true;
+            } else {
+                tracing::warn!("client does not support diagnostics data");
+            }
+            if related_information == Some(true) {
+                tracing::info!("client supports related information");
+                related_information_supported = true;
+            } else {
+                tracing::info!("client does not support related information");
+            }
         } else {
             tracing::warn!("client does not support diagnostics data");
         }
@@ -51,113 +65,8 @@ impl LanguageServer for BaconLs {
         state.project_root = project_root;
         state.workspace_folders = params.workspace_folders;
         state.diagnostics_data_supported = diagnostics_data_supported;
-
-        if let Some(ops) = params.initialization_options {
-            if let Some(values) = ops.as_object() {
-                tracing::debug!("client initialization options: {:#?}", values);
-                if let Some(value) = values.get("locationsFile") {
-                    state.locations_file = value
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                        .to_string();
-                }
-                if let Some(value) = values.get("updateOnSaveWaitMillis") {
-                    state.update_on_save_wait_millis = Duration::from_millis(
-                        value
-                            .as_u64()
-                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
-                    );
-                }
-                if let Some(value) = values.get("runBaconInBackgroundCommand") {
-                    state.run_bacon_in_background_command = value
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                        .to_string();
-                }
-                if let Some(value) = values.get("runBaconInBackgroundCommandArguments") {
-                    state.run_bacon_in_background_command_args = value
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                        .to_string();
-                }
-                if let Some(value) = values.get("synchronizeAllOpenFilesWaitMillis") {
-                    state.syncronize_all_open_files_wait_millis = Duration::from_millis(
-                        value
-                            .as_u64()
-                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
-                    );
-                }
-                if let Some(value) = values.get("useBaconBackend") {
-                    state.backend = if value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                    {
-                        Backend::Bacon
-                    } else {
-                        Backend::Cargo
-                    };
-                }
-                if let Some(value) = values.get("runBaconInBackground") {
-                    state.run_bacon_in_background = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                }
-                if let Some(value) = values.get("validateBaconPreferences") {
-                    state.validate_bacon_preferences = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
-                if let Some(value) = values.get("createBaconPreferencesFile") {
-                    state.create_bacon_preferences_file = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
-                if let Some(value) = values.get("updateOnSave") {
-                    state.update_on_save = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
-                if let Some(value) = values.get("cargoCommandArguments") {
-                    state.cargo_command_args = value
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                        .to_string();
-                }
-                if let Some(value) = values.get("cargoEnv") {
-                    state.cargo_env = value
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                        .split(',')
-                        .map(|x| x.trim().to_owned())
-                        .collect::<Vec<_>>();
-                }
-                if let Some(value) = values.get("updateOnChange") {
-                    state.update_on_change = value
-                        .as_bool()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
-                }
-                if let Some(value) = values.get("updateOnChangeCooldownMillis") {
-                    state.update_on_change_cooldown_millis = Duration::from_millis(
-                        value
-                            .as_u64()
-                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?,
-                    );
-                }
-            }
-        }
-        if let Backend::Cargo = state.backend {
-            state.run_bacon_in_background = false;
-            state.validate_bacon_preferences = false;
-            state.create_bacon_preferences_file = false;
-            state.update_on_save = true;
-            state.update_on_save_wait_millis = Duration::ZERO;
-            if !state.update_on_change {
-                if let Some(root) = &state.project_root {
-                    state.build_folder = root.clone();
-                }
-            }
-        }
-        tracing::debug!("loaded state from lsp settings: {state:#?}");
+        state.related_information_supported = related_information_supported;
+        tracing::trace!("loaded state from lsp settings: {state:#?}");
         drop(state);
 
         Ok(InitializeResult {
@@ -172,259 +81,144 @@ impl LanguageServer for BaconLs {
                     },
                     resolve_provider: None,
                 })),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["bacon_ls.run".to_string()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
                 name: PKG_NAME.to_string(),
                 version: Some(PKG_VERSION.to_string()),
             }),
+            // See <https://clangd.llvm.org/extensions.html#utf-8-offsets>.
+            // which says:
+            // ```
+            // This extension has been deprecated with clangd-21 in favor of
+            // the positionEncoding introduced in LSP 3.17. It’ll go away with clangd-23
+            // ```
+            // So None should be fine
             offset_encoding: None,
         })
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        let state = self.state.read().await;
-        let proj_root = state.project_root.clone();
-        let build_folder = state.build_folder.clone();
-        let run_bacon = state.run_bacon_in_background;
-        let bacon_command = state.run_bacon_in_background_command.clone();
-        let bacon_command_args = state.run_bacon_in_background_command_args.clone();
-        let create_bacon_prefs = state.create_bacon_preferences_file;
-        let validate_prefs = state.validate_bacon_preferences;
-        let cancel_token = state.cancel_token.clone();
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.update_on_change;
-        let cargo_command_args = state.cargo_command_args.clone();
-        let cargo_env = state.cargo_env.clone();
+        self.pull_configuration().await;
+
+        let mut state = self.state.write().await;
+        if state.backend.is_none() {
+            Self::init_cargo_backend(&mut state, CargoOptions::default());
+        }
+        let Some(runtime) = state.backend.as_ref() else {
+            unreachable!();
+        };
+        let backend_chosen = runtime.backend_choice();
         drop(state);
 
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!(
-                        "error copying source code to temporary filder {}: {e}",
-                        temporary_folder.display()
-                    );
-                }
-            }
+        tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized with backend: {backend_chosen:?}");
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized with backend: {backend_chosen:?}"),
+            )
+            .await;
+
+        tracing::info!("initialized complete");
+
+        if backend_chosen == BackendChoice::Cargo {
+            tracing::info!("triggering initial cargo diagnostics");
+            self.publish_cargo_diagnostics().await
         }
+    }
 
-        if let Some(client) = self.client.as_ref() {
-            tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server initialized");
-            client
-                .log_message(
-                    MessageType::INFO,
-                    format!("{PKG_NAME} v{PKG_VERSION} lsp server initialized"),
-                )
-                .await;
-            if let Backend::Cargo = backend {
-                if update_on_change {
-                    client
-                        .show_message(
-                            MessageType::INFO,
-                            "building the first clean copy of this repo can take while",
-                        )
-                        .await;
-                    let _ =
-                        Cargo::cargo_diagnostics(&cargo_command_args, &cargo_env, proj_root.as_ref(), &build_folder)
-                            .await;
-                }
-            }
-            if validate_prefs {
-                if let Err(e) = Bacon::validate_preferences(&bacon_command, create_bacon_prefs).await {
-                    tracing::error!("{e}");
-                    client.show_message(MessageType::ERROR, e).await;
-                }
-            } else {
-                tracing::warn!("skipping validation of bacon preferences, validateBaconPreferences is false");
-            }
-
-            if run_bacon {
-                let mut current_dir = None;
-                if let Ok(cwd) = env::current_dir() {
-                    current_dir = Self::find_git_root_directory(&cwd).await;
-                    if let Some(dir) = &current_dir {
-                        if !dir.join("Cargo.toml").exists() {
-                            current_dir = proj_root;
-                        }
-                    } else {
-                        current_dir = proj_root;
-                    }
-                }
-
-                match Bacon::run_in_background(&bacon_command, &bacon_command_args, current_dir.as_ref(), cancel_token)
-                    .await
-                {
-                    Ok(command) => {
-                        tracing::info!("bacon was started successfully and is running in the background");
-                        let mut state = self.state.write().await;
-                        state.bacon_command_handle = Some(command);
-                        drop(state);
-                    }
-                    Err(e) => {
-                        tracing::error!("{e}");
-                        client.show_message(MessageType::ERROR, e).await;
-                    }
-                }
-            } else {
-                tracing::warn!("skipping background bacon startup, runBaconInBackground is false");
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        tracing::info!("client sent didChangeConfiguration");
+        if let Some(settings) = params.settings.as_object()
+            && !settings.is_empty()
+        {
+            if let Some(settings) = settings.get("bacon_ls") {
+                tracing::debug!("using client provided settings");
+                self.adapt_to_settings(settings).await;
             }
         } else {
-            tracing::error!("client doesn't seem to be connected, the LSP server will not function properly");
+            tracing::debug!("settings is either not an object or is empty");
+            self.pull_configuration().await;
         }
-        let task_state = self.state.clone();
-        let task_client = self.client.clone();
-        let mut guard = self.state.write().await;
-        guard.sync_files_handle = Some(tokio::task::spawn(Self::syncronize_diagnostics(
-            task_state,
-            task_client,
-        )));
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         tracing::trace!("client sent didOpen request");
         let mut state = self.state.write().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.update_on_change;
-        state.open_files.insert(params.text_document.uri.clone());
-        drop(state);
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                }
-            }
+        if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+            runtime.open_files.insert(params.text_document.uri.clone());
+            drop(state);
+            self.publish_bacon_diagnostics(&params.text_document.uri).await;
         }
-        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         tracing::trace!("client sent didClose request");
         let mut state = self.state.write().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.update_on_change;
-        state.open_files.remove(&params.text_document.uri);
-        drop(state);
-        if let Backend::Cargo = backend {
-            if update_on_change {
-                if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                    tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                }
-            }
+        if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+            runtime.open_files.remove(&params.text_document.uri);
+            drop(state);
+            self.publish_bacon_diagnostics(&params.text_document.uri).await;
         }
-        self.publish_diagnostics(&params.text_document.uri).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        tracing::debug!("client sent didSave request");
         let state = self.state.read().await;
-        let update_on_save = state.update_on_save;
-        let update_on_save_wait_millis = state.update_on_save_wait_millis;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.update_on_change;
-        drop(state);
-        tracing::debug!(
-            "client sent didSave request, updateOnSave is {update_on_save} for {:?} after {update_on_save_wait_millis:?}",
-            params.text_document.uri
-        );
-        if update_on_save {
-            tokio::time::sleep(update_on_save_wait_millis).await;
-            if let Backend::Cargo = backend {
-                if update_on_change {
-                    if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                        tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
+        let Some(backend) = &state.backend else {
+            return;
+        };
+        match backend {
+            BackendRuntime::Bacon { config, .. } => {
+                if config.update_on_save {
+                    if !config.update_on_save_wait.is_zero() {
+                        tokio::time::sleep(config.update_on_save_wait).await;
                     }
+                    drop(state);
+                    self.publish_bacon_diagnostics(&params.text_document.uri).await;
                 }
             }
-            self.publish_diagnostics(&params.text_document.uri).await;
+            BackendRuntime::Cargo { config, .. } => {
+                if config.check_on_save {
+                    drop(state);
+                    self.publish_cargo_diagnostics().await;
+                }
+            }
         }
     }
 
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let state = self.state.read().await;
-        let temporary_folder = state.build_folder.clone();
-        let backend = state.backend;
-        let update_on_change = state.update_on_change;
-        let last_change = state.last_change;
-        drop(state);
-        if let Backend::Cargo = backend {
-            if !update_on_change {
-                tracing::debug!("skipping didChange execution, update_on_change is false");
-                return;
-            }
-            if last_change.elapsed() < Duration::from_secs(5) {
-                tracing::debug!("skipping didChange execution: still in cooldown");
-                return;
-            }
-            if let Some(source_folder) = Cargo::find_git_root_directory().await {
-                let file = params.text_document.uri.path().as_str().replacen(
-                    &source_folder.display().to_string(),
-                    &temporary_folder.display().to_string(),
-                    1,
-                );
-                if let Some(change) = params.content_changes.first() {
-                    if change.range.is_none() && change.range_length.is_none() {
-                        match fs::write(&file, &change.text).await {
-                            Ok(()) => {
-                                tracing::debug!(
-                                    "success overriding file {file} with full changed content from LSP client"
-                                );
-                                self.publish_diagnostics(&params.text_document.uri).await;
-                            }
-                            Err(e) => tracing::debug!(
-                                "error overriding file {file} with full changed content from LSP client: {e}"
-                            ),
-                        }
-                    } else {
-                        tracing::debug!("skipping overriding file {file} with changed partial content from LSP client");
-                    }
-                } else {
-                    tracing::debug!("skipping overriding file {file}, no changed content from LSP client");
-                }
-                self.state.write().await.last_change = Instant::now();
-            }
-        } else {
-            tracing::trace!("client sent didChange request, nothing to do");
-        }
+    async fn did_change(&self, _params: DidChangeTextDocumentParams) {
+        tracing::trace!("client sent didChange request, nothing to do");
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
-        for file in params.files {
-            tracing::debug!("client sent didDeleteFiles request for {}", file.uri);
-            if let Ok(uri) = str::parse::<Uri>(&file.uri) {
-                let mut state = self.state.write().await;
-                state.open_files.remove(&uri);
-                drop(state);
+        tracing::debug!("client sent didDeleteFiles request for {:?}", params.files);
+        let mut state = self.state.write().await;
+        if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+            for file in params.files {
+                if let Ok(uri) = str::parse::<Uri>(&file.uri) {
+                    runtime.open_files.remove(&uri);
+                }
             }
         }
+        drop(state);
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
+        tracing::debug!("client sent didRenameFiles request for {:?}", params.files);
         for file in params.files {
-            tracing::debug!(
-                "client sent didRenameFiles request {} -> {}",
-                file.old_uri,
-                file.new_uri
-            );
             if let (Ok(old_uri), Ok(new_uri)) = (str::parse::<Uri>(&file.old_uri), str::parse::<Uri>(&file.new_uri)) {
                 let mut state = self.state.write().await;
-                let temporary_folder = state.build_folder.clone();
-                let backend = state.backend;
-                let update_on_change = state.update_on_change;
-                state.open_files.remove(&old_uri);
-                state.open_files.insert(new_uri.clone());
-                drop(state);
-                if let Backend::Cargo = backend {
-                    if update_on_change {
-                        if let Err(e) = Cargo::copy_source_code(&temporary_folder).await {
-                            tracing::error!("error copying source code to {}: {e}", temporary_folder.display());
-                        }
-                    }
+                if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
+                    runtime.open_files.remove(&old_uri);
+                    runtime.open_files.insert(new_uri.clone());
                 }
-                self.publish_diagnostics(&new_uri).await;
+                drop(state);
+                self.publish_bacon_diagnostics(&new_uri).await;
             }
         }
     }
@@ -435,76 +229,105 @@ impl LanguageServer for BaconLs {
         let diagnostics_data_supported = state.diagnostics_data_supported;
         drop(state);
 
-        if diagnostics_data_supported {
-            let actions = params
-                .context
-                .diagnostics
-                .iter()
-                .filter(|diag| diag.source == Some("bacon-ls".to_string()))
-                .flat_map(|diag| match &diag.data {
-                    Some(data) => {
-                        if let Ok(DiagnosticData { corrections }) =
-                            serde_json::from_value::<DiagnosticData>(data.clone())
-                        {
-                            corrections
-                                .iter()
-                                .map(|c| {
-                                    CodeActionOrCommand::CodeAction(CodeAction {
-                                        title: "Replace with bacon-ls suggestion".to_string(),
-                                        kind: Some(CodeActionKind::QUICKFIX),
-                                        diagnostics: Some(vec![diag.clone()]),
-                                        edit: Some(WorkspaceEdit {
-                                            changes: Some(HashMap::from([(
-                                                params.text_document.uri.clone(),
-                                                vec![TextEdit {
-                                                    range: diag.range,
-                                                    new_text: c.to_string(),
-                                                }],
-                                            )])),
-                                            ..WorkspaceEdit::default()
-                                        }),
-                                        is_preferred: if corrections.len() == 1 { Some(true) } else { None },
-                                        ..CodeAction::default()
-                                    })
+        if !diagnostics_data_supported {
+            return Ok(None);
+        }
+
+        let bacon_ls = "bacon-ls".to_string();
+        let actions = params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.source.as_ref() == Some(&bacon_ls))
+            .flat_map(|diag| match &diag.data {
+                Some(data) => {
+                    if let Ok(DiagnosticData { corrections }) = serde_json::from_value::<DiagnosticData>(data.clone()) {
+                        corrections
+                            .iter()
+                            .map(|c| {
+                                CodeActionOrCommand::CodeAction(CodeAction {
+                                    title: c.label.clone(),
+                                    kind: Some(CodeActionKind::QUICKFIX),
+                                    diagnostics: Some(vec![diag.clone()]),
+                                    edit: Some(WorkspaceEdit {
+                                        changes: Some(HashMap::from([(
+                                            params.text_document.uri.clone(),
+                                            c.edits
+                                                .iter()
+                                                .map(|e: &CorrectionEdit| TextEdit {
+                                                    range: e.range,
+                                                    new_text: e.new_text.clone(),
+                                                })
+                                                .collect(),
+                                        )])),
+                                        ..WorkspaceEdit::default()
+                                    }),
+                                    is_preferred: if corrections.len() == 1 { Some(true) } else { None },
+                                    ..CodeAction::default()
                                 })
-                                .collect()
-                        } else {
-                            tracing::error!("deserialization failed: received {data:?} as diagnostic data",);
-                            vec![]
-                        }
-                    }
-                    None => {
-                        tracing::debug!("client doesn't support diagnostic data");
+                            })
+                            .collect()
+                    } else {
+                        tracing::error!("deserialization failed: received {data:?} as diagnostic data",);
                         vec![]
                     }
-                })
-                .collect::<Vec<_>>();
+                }
+                None => {
+                    tracing::debug!("client doesn't support diagnostic data");
+                    vec![]
+                }
+            })
+            .collect::<Vec<_>>();
 
-            Ok(Some(actions))
-        } else {
-            Ok(None)
+        Ok(Some(actions))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> jsonrpc::Result<Option<LSPAny>> {
+        if params.command == "bacon_ls.run" {
+            let state = self.state.read().await;
+            if let Some(BackendRuntime::Cargo { .. }) = state.backend.as_ref() {
+                drop(state);
+                self.publish_cargo_diagnostics().await;
+            }
+            return Ok(None);
         }
+
+        Err(jsonrpc::Error::method_not_found())
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
+        tracing::info!("shutdown requested");
         let mut state = self.state.write().await;
-        state.cancel_token.cancel();
-        if let Some(handle) = state.bacon_command_handle.take() {
-            tracing::info!("terminating bacon from running in background");
-            let _ = handle.await;
+        let backend = state.backend.take();
+        drop(state);
+
+        if let Some(backend) = backend {
+            match backend {
+                BackendRuntime::Bacon { mut runtime, .. } => {
+                    runtime.shutdown_token.cancel();
+                    if let Some(handle) = runtime.command_handle.take() {
+                        tracing::info!("terminating bacon from running in background");
+                        if let Err(e) = handle.await {
+                            tracing::warn!("bacon command task failed during shutdown: {e}");
+                        }
+                    }
+                    if let Err(e) = runtime.sync_files_handle.await {
+                        tracing::warn!("sync files task failed during shutdown: {e}");
+                    }
+                }
+                BackendRuntime::Cargo { runtime, .. } => {
+                    runtime.cancel_token.cancel();
+                }
+            }
         }
-        if let Some(handle) = state.sync_files_handle.take() {
-            let _ = handle.await;
-        }
-        if let Some(client) = self.client.as_ref() {
-            tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
-            client
-                .log_message(
-                    MessageType::INFO,
-                    format!("{PKG_NAME} v{PKG_VERSION} lsp server stopped"),
-                )
-                .await;
-        }
+
+        tracing::info!("{PKG_NAME} v{PKG_VERSION} lsp server stopped");
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("{PKG_NAME} v{PKG_VERSION} lsp server stopped"),
+            )
+            .await;
         Ok(())
     }
 }

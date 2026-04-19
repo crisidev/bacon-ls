@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::Client;
 
-use crate::{BaconLs, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
+use crate::{BackendRuntime, BaconLs, Correction, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -211,11 +211,15 @@ impl Bacon {
         };
 
         let mut message = line_split[6].replace("\\n", "\n").trim_end_matches('\n').to_string();
+        let range = Range::new(
+            Position::new(line_start - 1, column_start - 1),
+            Position::new(line_end - 1, column_end - 1),
+        );
         let replacement = line_split[8];
         let data = if replacement != "none" {
             tracing::debug!("storing potential quick fix code action to replace word with {replacement}");
             Some(serde_json::json!(DiagnosticData {
-                corrections: vec![replacement.into()]
+                corrections: vec![Correction::from_single(range, replacement)]
             }))
         } else {
             None
@@ -234,10 +238,7 @@ impl Bacon {
                 .to_string()
         }
         let diagnostic = Diagnostic {
-            range: Range::new(
-                Position::new(line_start - 1, column_start - 1),
-                Position::new(line_end - 1, column_end - 1),
-            ),
+            range,
             severity: Some(severity),
             source: Some(PKG_NAME.to_string()),
             message,
@@ -292,29 +293,29 @@ impl Bacon {
         match command.spawn() {
             Ok(mut child) => {
                 // Handle stdout
-                if log_bacon != "off" {
-                    if let Some(stdout) = child.stdout.take() {
-                        let reader = BufReader::new(stdout).lines();
-                        tokio::spawn(async move {
-                            let mut reader = reader;
-                            while let Ok(Some(line)) = reader.next_line().await {
-                                tracing::info!("[bacon stdout]: {}", line);
-                            }
-                        });
-                    }
+                if log_bacon != "off"
+                    && let Some(stdout) = child.stdout.take()
+                {
+                    let reader = BufReader::new(stdout).lines();
+                    tokio::spawn(async move {
+                        let mut reader = reader;
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            tracing::info!("[bacon stdout]: {}", line);
+                        }
+                    });
                 }
 
                 // Handle stderr
-                if log_bacon != "off" {
-                    if let Some(stderr) = child.stderr.take() {
-                        let reader = BufReader::new(stderr).lines();
-                        tokio::spawn(async move {
-                            let mut reader = reader;
-                            while let Ok(Some(line)) = reader.next_line().await {
-                                tracing::error!("[bacon stderr]: {}", line);
-                            }
-                        });
-                    }
+                if log_bacon != "off"
+                    && let Some(stderr) = child.stderr.take()
+                {
+                    let reader = BufReader::new(stderr).lines();
+                    tokio::spawn(async move {
+                        let mut reader = reader;
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            tracing::error!("[bacon stderr]: {}", line);
+                        }
+                    });
                 }
 
                 // Wait for the child process to finish
@@ -343,14 +344,14 @@ impl Bacon {
                     .uri
                     .to_file_path()
                     .expect("the workspace folder sent by the editor is not a file path");
-                if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await {
-                    if git_root.join("Cargo.toml").exists() {
-                        tracing::debug!(
-                            "found git root directory {}, using it for files base path",
-                            git_root.display()
-                        );
-                        folder_path = Cow::Owned(git_root);
-                    }
+                if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await
+                    && git_root.join("Cargo.toml").exists()
+                {
+                    tracing::debug!(
+                        "found git root directory {}, using it for files base path",
+                        git_root.display()
+                    );
+                    folder_path = Cow::Owned(git_root);
                 }
                 let mut bacon_locations = Vec::new();
                 if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
@@ -380,18 +381,12 @@ impl Bacon {
 
                                 if is_new_diagnostic {
                                     // Process the collected buffer before starting a new entry
-                                    if !buffer.is_empty() {
-                                        if let Some((path, diagnostic)) =
+                                    if !buffer.is_empty()
+                                        && let Some((path, diagnostic)) =
                                             Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
-                                        {
-                                            tracing::debug!("found diagnostic for {}", path.as_str());
-                                            Self::deduplicate_diagnostics(
-                                                path.clone(),
-                                                uri,
-                                                diagnostic,
-                                                &mut diagnostics,
-                                            );
-                                        }
+                                    {
+                                        tracing::debug!("found diagnostic for {}", path.as_str());
+                                        Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
                                     }
                                     // Reset buffer for new diagnostic entry
                                     buffer.clear();
@@ -405,12 +400,11 @@ impl Bacon {
                             }
 
                             // Flush the remaining buffer after loop ends
-                            if !buffer.is_empty() {
-                                if let Some((path, diagnostic)) =
+                            if !buffer.is_empty()
+                                && let Some((path, diagnostic)) =
                                     Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
-                                {
-                                    Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
-                                }
+                            {
+                                Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
                             }
                         }
                         Err(e) => {
@@ -435,17 +429,21 @@ impl Bacon {
             .collect::<Vec<Diagnostic>>()
     }
 
-    pub(crate) async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Option<Arc<Client>>) {
+    pub(crate) async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
         tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
-        let (locations_file, proj_root, wait_time, cancel_token) = {
+        let (locations_file, proj_root, wait_time, shutdown_token) = {
             let state = state.read().await;
+            let Some(BackendRuntime::Bacon { config, runtime }) = &state.backend else {
+                tracing::error!("syncronize_diagnostics called without bacon backend");
+                return;
+            };
             (
-                state.locations_file.clone(),
+                config.locations_file.clone(),
                 state.project_root.clone(),
-                state.syncronize_all_open_files_wait_millis,
-                state.cancel_token.clone(),
+                config.synchronize_all_open_files_wait,
+                runtime.shutdown_token.clone(),
             )
         };
 
@@ -478,7 +476,7 @@ impl Bacon {
             ev = rx.recv_async() => {
                 Some(ev)
             }
-            _ = cancel_token.cancelled() => {
+            _ = shutdown_token.cancelled() => {
                 None
             }
         } {
@@ -495,7 +493,11 @@ impl Bacon {
             }
 
             let loop_state = state.read().await;
-            let open_files = loop_state.open_files.clone();
+            let Some(BackendRuntime::Bacon { runtime, .. }) = &loop_state.backend else {
+                tracing::error!("backend changed during sync loop");
+                return;
+            };
+            let open_files = runtime.open_files.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
             drop(loop_state);
             tracing::debug!(
@@ -503,22 +505,20 @@ impl Bacon {
                 open_files.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
             );
             for uri in open_files.iter() {
-                Self::publish_diagnostics(client.as_ref(), uri, &locations_file, workspace_folders.as_deref()).await;
+                Self::publish_diagnostics(&client, uri, &locations_file, workspace_folders.as_deref()).await;
             }
         }
     }
 
     pub(crate) async fn publish_diagnostics(
-        client: Option<&Arc<Client>>,
+        client: &Arc<Client>,
         uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) {
         let diagnostics_vec = Self::diagnostics_vec(uri, locations_file_name, workspace_folders).await;
         tracing::info!("sent {} bacon diagnostics for {uri:?}", diagnostics_vec.len());
-        if let Some(client) = client {
-            client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
-        }
+        client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
     }
 }
 
