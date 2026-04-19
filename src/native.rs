@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio::process::Command;
 use tower_lsp_server::{Bounded, NotCancellable, OngoingProgress};
 
-use crate::{Correction, CorrectionEdit, DiagnosticData, PKG_NAME};
+use crate::{BaconLs, Correction, CorrectionEdit, DiagnosticData, PKG_NAME, path_to_file_uri};
 
 /// Like `read_until` but stops at either `\r` or `\n`.
 /// Returns the number of bytes read (0 = EOF).
@@ -89,7 +89,7 @@ where
     D: Deserializer<'de>,
 {
     let url_str: &str = Deserialize::deserialize(deserializer)?;
-    str::parse::<Uri>(&format!("file://{url_str}")).map_err(serde::de::Error::custom)
+    str::parse::<Uri>(&path_to_file_uri(url_str)).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,10 +143,14 @@ fn parse_building_line(line: &str) -> Option<(String, u32)> {
 impl Cargo {
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
         match severity_str {
+            "error" => DiagnosticSeverity::ERROR,
             "warning" | "failure-note" => DiagnosticSeverity::WARNING,
             "info" | "information" | "note" => DiagnosticSeverity::INFORMATION,
             "hint" | "help" => DiagnosticSeverity::HINT,
-            _ => DiagnosticSeverity::ERROR,
+            other => {
+                tracing::warn!("unknown cargo severity level {other:?}, defaulting to INFORMATION");
+                DiagnosticSeverity::INFORMATION
+            }
         }
     }
 
@@ -183,7 +187,7 @@ impl Cargo {
             .into_string()
             .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?;
         Ok(Some(
-            str::parse::<Uri>(&format!("file://{file_name}")).context("parsing filename")?,
+            str::parse::<Uri>(&path_to_file_uri(&file_name)).context("parsing filename")?,
         ))
     }
 
@@ -217,8 +221,11 @@ impl Cargo {
                                     location: Location {
                                         uri,
                                         range: Range::new(
-                                            Position::new(s.line_start - 1, s.column_start - 1),
-                                            Position::new(s.line_end - 1, s.column_end - 1),
+                                            Position::new(
+                                                s.line_start.saturating_sub(1),
+                                                s.column_start.saturating_sub(1),
+                                            ),
+                                            Position::new(s.line_end.saturating_sub(1), s.column_end.saturating_sub(1)),
                                         ),
                                     },
                                     message: child.message.clone(),
@@ -245,8 +252,14 @@ impl Cargo {
             };
             tracing::trace!(uri = url.to_string(), "adding diagnostic");
             let range = Range::new(
-                Position::new(resolved.line_start - 1, resolved.column_start - 1),
-                Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                Position::new(
+                    resolved.line_start.saturating_sub(1),
+                    resolved.column_start.saturating_sub(1),
+                ),
+                Position::new(
+                    resolved.line_end.saturating_sub(1),
+                    resolved.column_end.saturating_sub(1),
+                ),
             );
             let corrections: Vec<Correction> = resolved
                 .is_machine_applicable()
@@ -286,8 +299,14 @@ impl Cargo {
                     continue;
                 };
                 let range = Range::new(
-                    Position::new(resolved.line_start - 1, resolved.column_start - 1),
-                    Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                    Position::new(
+                        resolved.line_start.saturating_sub(1),
+                        resolved.column_start.saturating_sub(1),
+                    ),
+                    Position::new(
+                        resolved.line_end.saturating_sub(1),
+                        resolved.column_end.saturating_sub(1),
+                    ),
                 );
 
                 // Group all MachineApplicable primary spans within this child
@@ -303,8 +322,8 @@ impl Cargo {
                         let r = s.project_span();
                         Some(CorrectionEdit {
                             range: Range::new(
-                                Position::new(r.line_start - 1, r.column_start - 1),
-                                Position::new(r.line_end - 1, r.column_end - 1),
+                                Position::new(r.line_start.saturating_sub(1), r.column_start.saturating_sub(1)),
+                                Position::new(r.line_end.saturating_sub(1), r.column_end.saturating_sub(1)),
                             ),
                             new_text: new_text.to_string(),
                         })
@@ -356,6 +375,10 @@ impl Cargo {
         let mut child = cmd
             .args(command_args)
             .current_dir(destination_folder)
+            // Close stdin explicitly: the LSP server's stdin is the jsonrpc
+            // pipe, and we must not let cargo (or any tool it invokes) inherit
+            // and read from it.
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -457,58 +480,42 @@ impl Cargo {
         Ok(())
     }
 
-    pub(crate) async fn find_git_root_directory() -> Option<PathBuf> {
-        let output = tokio::process::Command::new("git")
-            .arg("rev-parse")
-            .arg("--show-toplevel")
-            .output()
-            .await
-            .ok()?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout).ok().map(|v| PathBuf::from(v.trim()))
-        } else {
-            None
-        }
-    }
-
     pub(crate) async fn find_project_root(params: &InitializeParams) -> Option<PathBuf> {
-        let git_root = Self::find_git_root_directory().await?;
-
-        // We only chose the git root as our workspace root if a
-        // `Cargo.toml` actually exists in the git root.
-        if git_root.join("Cargo.toml").exists() {
-            return Some(git_root);
-        }
-
+        // Build an ordered list of candidate paths to probe:
+        // client-authoritative workspace folders first, then the deprecated
+        // root_uri/root_path fields, then the server's own CWD as a last
+        // resort. This avoids ever picking the LSP server's CWD over an
+        // explicitly-specified workspace folder.
+        let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(workspace_folders) = &params.workspace_folders {
             for folder in workspace_folders {
-                let root_path = PathBuf::from(folder.uri.path().as_str());
-                if root_path.join("Cargo.toml").exists() {
-                    return Some(root_path);
-                }
+                candidates.push(PathBuf::from(folder.uri.path().as_str()));
             }
         }
-
         #[allow(deprecated)]
         if let Some(root_uri) = &params.root_uri {
-            let root_path = PathBuf::from(root_uri.path().as_str());
-            if root_path.join("Cargo.toml").exists() {
-                return Some(root_path);
-            }
+            candidates.push(PathBuf::from(root_uri.path().as_str()));
         }
-
         #[allow(deprecated)]
         if let Some(root_path) = &params.root_path {
-            let root_path = PathBuf::from(root_path);
-            if root_path.join("Cargo.toml").exists() {
-                return Some(root_path);
-            }
+            candidates.push(PathBuf::from(root_path));
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd);
         }
 
-        let cwd = std::env::current_dir().ok()?;
-        if cwd.join("Cargo.toml").exists() {
-            return Some(cwd);
+        for candidate in &candidates {
+            // Prefer the git root containing this candidate when it has a
+            // Cargo.toml — this lets a nested crate resolve to the workspace
+            // root, which is where cargo needs to run.
+            if let Some(git_root) = BaconLs::find_git_root_directory(candidate).await
+                && git_root.join("Cargo.toml").exists()
+            {
+                return Some(git_root);
+            }
+            if candidate.join("Cargo.toml").exists() {
+                return Some(candidate.clone());
+            }
         }
 
         None
@@ -647,8 +654,14 @@ mod tests {
         assert_eq!(primary_spans[0].suggested_replacement.as_deref(), Some(""));
         let resolved = primary_spans[0].project_span();
         let range = Range::new(
-            Position::new(resolved.line_start - 1, resolved.column_start - 1),
-            Position::new(resolved.line_end - 1, resolved.column_end - 1),
+            Position::new(
+                resolved.line_start.saturating_sub(1),
+                resolved.column_start.saturating_sub(1),
+            ),
+            Position::new(
+                resolved.line_end.saturating_sub(1),
+                resolved.column_end.saturating_sub(1),
+            ),
         );
         let correction = Correction::from_single(range, "");
         assert_eq!(correction.label, "Remove");
@@ -680,8 +693,14 @@ mod tests {
                 let resolved = s.project_span();
                 Some(CorrectionEdit {
                     range: Range::new(
-                        Position::new(resolved.line_start - 1, resolved.column_start - 1),
-                        Position::new(resolved.line_end - 1, resolved.column_end - 1),
+                        Position::new(
+                            resolved.line_start.saturating_sub(1),
+                            resolved.column_start.saturating_sub(1),
+                        ),
+                        Position::new(
+                            resolved.line_end.saturating_sub(1),
+                            resolved.column_end.saturating_sub(1),
+                        ),
                     ),
                     new_text: new_text.to_string(),
                 })
@@ -712,5 +731,61 @@ mod tests {
         let span: CargoSpan = serde_json::from_str(json).unwrap();
         let resolved = span.project_span();
         assert!(std::ptr::eq(resolved, &span));
+    }
+
+    #[test]
+    fn test_parse_building_line_basic() {
+        // The returned message is the portion after "] " (i.e. fraction + crate list),
+        // not the full original line — that's the piece suitable for a progress report.
+        let line = "Building [====       ] 7/10: foo, bar";
+        let (msg, pct) = parse_building_line(line).unwrap();
+        assert_eq!(msg, "7/10: foo, bar");
+        assert_eq!(pct, 70);
+    }
+
+    #[test]
+    fn test_parse_building_line_caps_percentage_at_99() {
+        let line = "Building [========] 10/10: last";
+        let (_, pct) = parse_building_line(line).unwrap();
+        assert_eq!(
+            pct, 99,
+            "100% should cap at 99 to keep the bar indeterminate until Finished"
+        );
+    }
+
+    #[test]
+    fn test_parse_building_line_rejects_non_building_prefix() {
+        assert!(parse_building_line("Finished `dev` profile").is_none());
+        assert!(parse_building_line("Compiling foo v0.1.0").is_none());
+    }
+
+    #[test]
+    fn test_parse_building_line_zero_total_returns_none() {
+        assert!(parse_building_line("Building [] 0/0: nothing").is_none());
+    }
+
+    #[test]
+    fn test_parse_building_line_malformed_returns_none() {
+        assert!(parse_building_line("Building [====] no-fraction-here").is_none());
+        assert!(parse_building_line("Building [====] abc/def: foo").is_none());
+    }
+
+    #[test]
+    fn test_parse_severity_known_levels() {
+        assert_eq!(Cargo::parse_severity("error"), DiagnosticSeverity::ERROR);
+        assert_eq!(Cargo::parse_severity("warning"), DiagnosticSeverity::WARNING);
+        assert_eq!(Cargo::parse_severity("failure-note"), DiagnosticSeverity::WARNING);
+        assert_eq!(Cargo::parse_severity("note"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Cargo::parse_severity("info"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Cargo::parse_severity("help"), DiagnosticSeverity::HINT);
+        assert_eq!(Cargo::parse_severity("hint"), DiagnosticSeverity::HINT);
+    }
+
+    #[test]
+    fn test_parse_severity_unknown_level_defaults_to_information() {
+        assert_eq!(
+            Cargo::parse_severity("something-brand-new"),
+            DiagnosticSeverity::INFORMATION
+        );
     }
 }

@@ -3,13 +3,14 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use argh::FromArgs;
 use bacon::Bacon;
 use flume::RecvError;
 use ls_types::{Diagnostic, DiagnosticSeverity, MessageType, ProgressToken, Range, Uri, WorkspaceFolder};
 use native::Cargo;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde_json::{Map, Value};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
@@ -21,18 +22,40 @@ mod bacon;
 mod lsp;
 mod native;
 
-// Clippy canary — remove once bacon-ls + clippy integration is verified.
-#[allow(dead_code)]
-fn _clippy_canary() -> i32 {
-    let x = 42;
-    return x;
-}
-
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOCATIONS_FILE: &str = ".bacon-locations";
 const BACON_BACKGROUND_COMMAND: &str = "bacon";
 const BACON_BACKGROUND_COMMAND_ARGS: &str = "--headless -j bacon-ls";
+
+// Characters that must be percent-encoded when putting an OS path into a
+// `file://` URI. We keep `/` unencoded so it continues to split the path into
+// segments (clients expect multi-segment URIs). This covers the reserved URI
+// characters plus a few that break `Uri` parsing in practice (space, `#`,
+// `?`, `%`, `[`/`]`, backslash, etc.).
+const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}')
+    .add(b'%');
+
+/// Build a `file://...` URI string from an OS path. Percent-encodes any
+/// characters that would otherwise break URI parsing (spaces, `#`, `?`, `%`,
+/// etc.), while leaving `/` intact so path segments survive.
+pub(crate) fn path_to_file_uri(path: &str) -> String {
+    format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+}
 
 /// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
@@ -355,6 +378,11 @@ pub(crate) struct CargoRuntime {
     files_with_diags: HashSet<Uri>,
     diagnostics_version: i32,
     build_folder: PathBuf,
+    // Timestamp of the most recent publish_cargo_diagnostics invocation.
+    // Used by did_open to avoid kicking off a redundant run when one was
+    // just triggered (e.g. the initial run from `initialized` immediately
+    // followed by the client's first `didOpen`).
+    last_run_started: Option<Instant>,
 }
 
 impl Default for CargoRuntime {
@@ -365,6 +393,7 @@ impl Default for CargoRuntime {
             files_with_diags: HashSet::new(),
             diagnostics_version: 0,
             build_folder: PathBuf::new(),
+            last_run_started: None,
         }
     }
 }
@@ -376,6 +405,9 @@ pub(crate) struct BaconRuntime {
     // Some(..) if we have to run bacon in the background ourselves
     pub(crate) command_handle: Option<JoinHandle<()>>,
     pub(crate) sync_files_handle: JoinHandle<()>,
+    // Monotonic counter stamped onto each publishDiagnostics call so clients
+    // can discard stale results if publishes arrive out of order.
+    pub(crate) diagnostics_version: i32,
 }
 
 #[derive(Debug, Default)]
@@ -450,24 +482,34 @@ impl BaconLs {
     fn configure_tracing(log_level: Option<String>) {
         // Configure logging to file.
         let level = log_level.unwrap_or_else(|| env::var("RUST_LOG").unwrap_or("off".to_string()));
-        if level != "off" {
-            tracing_subscriber::fmt()
-                .with_env_filter(level)
-                .with_writer(
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open(format!("{PKG_NAME}.log"))
-                        .unwrap(),
-                )
-                .with_thread_names(true)
-                .with_span_events(FmtSpan::CLOSE)
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
-                .init();
+        if level == "off" {
+            return;
         }
+        let log_path = format!("{PKG_NAME}.log");
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                // stdin/stdout are the LSP jsonrpc pipes; stderr is usually
+                // captured by the client's trace window. One line there is the
+                // best we can do to tell the user why logging is silent.
+                eprintln!("{PKG_NAME}: could not open log file {log_path}: {e} (tracing disabled)");
+                return;
+            }
+        };
+        tracing_subscriber::fmt()
+            .with_env_filter(level)
+            .with_writer(file)
+            .with_thread_names(true)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true)
+            .init();
     }
 
     /// Run the LSP server.
@@ -640,10 +682,11 @@ impl BaconLs {
                             shutdown_token,
                             open_files: HashSet::new(),
                             command_handle,
-                            sync_files_handle: tokio::task::spawn(Self::syncronize_diagnostics(
+                            sync_files_handle: tokio::task::spawn(Self::synchronize_diagnostics(
                                 task_state,
                                 task_client,
                             )),
+                            diagnostics_version: 0,
                         },
                     });
                     tracing::info!("bacon backend initialized");
@@ -658,7 +701,12 @@ impl BaconLs {
                             .show_message(MessageType::ERROR, format!("Error in \"cargo\" section: {e}"))
                             .await;
                     }
-                    Self::init_cargo_backend(&mut state, config);
+                    if let Err(e) = Self::init_cargo_backend(&mut state, config) {
+                        tracing::error!("{e}");
+                        drop(state);
+                        self.client.show_message(MessageType::ERROR, e).await;
+                        return;
+                    }
                     drop(state);
                 }
             }
@@ -668,7 +716,14 @@ impl BaconLs {
                 Some(BackendRuntime::Cargo { .. }) => BackendChoice::Cargo,
                 None => unreachable!("backend is Some in this branch"),
             };
-            let desired = Self::detect_backend(values).unwrap_or(current_choice);
+            let desired = match Self::detect_backend(values) {
+                Ok(choice) => choice,
+                Err(err) => {
+                    tracing::error!("invalid backend configuration on reload: {err}");
+                    self.client.show_message(MessageType::ERROR, &err).await;
+                    return;
+                }
+            };
 
             if desired != current_choice {
                 let msg = "Backend cannot be changed while the server is running. \
@@ -712,13 +767,33 @@ impl BaconLs {
         }
     }
 
-    fn init_cargo_backend(state: &mut RwLockWriteGuard<'_, State>, config: CargoOptions) {
-        let mut runtime = CargoRuntime::default();
-        if let Some(root) = &state.project_root {
-            runtime.build_folder = root.clone();
-        }
+    fn init_cargo_backend(state: &mut RwLockWriteGuard<'_, State>, config: CargoOptions) -> Result<(), String> {
+        let build_folder = match &state.project_root {
+            Some(root) => root.clone(),
+            None => match env::current_dir() {
+                Ok(cwd) => {
+                    tracing::warn!(
+                        "no Cargo project root detected; falling back to current working directory: {}",
+                        cwd.display()
+                    );
+                    cwd
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "cargo backend cannot start: no project root detected and current working \
+                         directory is unavailable ({e}). Open a folder containing a Cargo.toml and \
+                         restart the server."
+                    ));
+                }
+            },
+        };
+        let runtime = CargoRuntime {
+            build_folder,
+            ..CargoRuntime::default()
+        };
         tracing::info!(build_folder = ?runtime.build_folder, "cargo backend initialized");
         state.backend = Some(BackendRuntime::Cargo { config, runtime });
+        Ok(())
     }
 
     async fn publish_cargo_diagnostics(&self) {
@@ -740,6 +815,7 @@ impl BaconLs {
         let clear_diagnostics_on_check = config.clear_diagnostics_on_check;
         let build_folder = runtime.build_folder.clone();
         runtime.diagnostics_version += 1;
+        runtime.last_run_started = Some(Instant::now());
         let version = runtime.diagnostics_version;
         let refresh_interval = config.refresh_interval_seconds;
 
@@ -975,17 +1051,26 @@ impl BaconLs {
         let mut guard = self.state.write().await;
         let workspace_folders = guard.workspace_folders.clone();
 
-        let Some(BackendRuntime::Bacon { config, .. }) = &mut guard.backend else {
+        let Some(BackendRuntime::Bacon { config, runtime }) = &mut guard.backend else {
             return;
         };
         tracing::info!(uri = uri.to_string(), "publish bacon diagnostics");
         let locations_file_name = config.locations_file.clone();
+        runtime.diagnostics_version = runtime.diagnostics_version.wrapping_add(1);
+        let version = runtime.diagnostics_version;
         drop(guard);
-        Bacon::publish_diagnostics(&self.client, uri, &locations_file_name, workspace_folders.as_deref()).await;
+        Bacon::publish_diagnostics(
+            &self.client,
+            uri,
+            &locations_file_name,
+            workspace_folders.as_deref(),
+            version,
+        )
+        .await;
     }
 
-    async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
-        Bacon::syncronize_diagnostics(state, client).await;
+    async fn synchronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
+        Bacon::synchronize_diagnostics(state, client).await;
     }
 }
 
@@ -996,6 +1081,47 @@ mod tests {
     #[test]
     fn test_can_configure_tracing() {
         BaconLs::configure_tracing(Some("info".to_string()));
+    }
+
+    #[test]
+    fn test_path_to_file_uri_plain_ascii() {
+        let uri = path_to_file_uri("/home/me/src/lib.rs");
+        assert_eq!(uri, "file:///home/me/src/lib.rs");
+        let parsed = uri.parse::<Uri>().expect("must parse as Uri");
+        assert_eq!(parsed.path().as_str(), "/home/me/src/lib.rs");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_escapes_space_and_hash_and_percent() {
+        let uri = path_to_file_uri("/home/me/My Projects/tests#1/file%.rs");
+        assert_eq!(uri, "file:///home/me/My%20Projects/tests%231/file%25.rs");
+        let parsed = uri.parse::<Uri>().expect("must parse as Uri");
+        // Uri preserves the encoded form on the wire; clients are responsible
+        // for decoding. We only need to confirm the parse succeeds.
+        assert_eq!(parsed.path().as_str(), "/home/me/My%20Projects/tests%231/file%25.rs");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_preserves_path_separators() {
+        // The `/` separator must NOT be encoded, or clients can't recognize
+        // segment structure.
+        let uri = path_to_file_uri("/a/b/c");
+        assert_eq!(uri, "file:///a/b/c");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_relative_path_preserves_segments() {
+        // Cargo emits relative paths (e.g. "src/lib.rs") in JSON output. The
+        // current `deserialize_url` hack turns those into URIs with the first
+        // segment as "host" — percent-encoding must not break that.
+        let uri = path_to_file_uri("src/lib.rs");
+        assert_eq!(uri, "file://src/lib.rs");
+        let parsed = uri.parse::<Uri>().expect("must parse as Uri");
+        assert_eq!(
+            parsed.authority().map(|a| a.host().to_string()),
+            Some("src".to_string())
+        );
+        assert_eq!(parsed.path().as_str(), "/lib.rs");
     }
 
     #[test]
@@ -1055,5 +1181,244 @@ mod tests {
     fn test_detect_backend_explicit_overrides_keys() {
         let values: Map<String, Value> = serde_json::from_str(r#"{"backend": "cargo", "bacon": {}}"#).unwrap();
         assert_eq!(BaconLs::detect_backend(&values).unwrap(), BackendChoice::Cargo);
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_default() {
+        let args = CargoOptions::default().build_command_args();
+        assert_eq!(args, vec!["check", "--message-format=json-diagnostic-rendered-ansi"]);
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_with_features() {
+        let opts = CargoOptions {
+            features: vec!["a".into(), "b".into(), "c".into()],
+            ..CargoOptions::default()
+        };
+        let args = opts.build_command_args();
+        assert_eq!(
+            args,
+            vec![
+                "check",
+                "--message-format=json-diagnostic-rendered-ansi",
+                "--features",
+                "a,b,c"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_single_feature() {
+        let opts = CargoOptions {
+            features: vec!["only".into()],
+            ..CargoOptions::default()
+        };
+        let args = opts.build_command_args();
+        assert_eq!(
+            args,
+            vec![
+                "check",
+                "--message-format=json-diagnostic-rendered-ansi",
+                "--features",
+                "only"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_with_package_and_extras() {
+        let opts = CargoOptions {
+            command: "clippy".into(),
+            package: Some("my-crate".into()),
+            extra_command_args: vec!["--workspace".into(), "--all-targets".into()],
+            ..CargoOptions::default()
+        };
+        let args = opts.build_command_args();
+        assert_eq!(
+            args,
+            vec![
+                "clippy",
+                "--message-format=json-diagnostic-rendered-ansi",
+                "-p",
+                "my-crate",
+                "--workspace",
+                "--all-targets",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cargo_options_update_from_json_full_roundtrip() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({
+            "command": "clippy",
+            "features": ["a", "b"],
+            "package": "pkg",
+            "extraCommandArguments": ["--workspace"],
+            "env": {"RUST_LOG": "trace"},
+            "cancelRunning": false,
+            "refreshIntervalSeconds": 10,
+            "separateChildDiagnostics": true,
+            "checkOnSave": false,
+            "clearDiagnosticsOnCheck": true,
+        });
+        let obj = json.as_object().unwrap();
+        opts.update_from_json_obj(obj).expect("should parse");
+        assert_eq!(opts.command, "clippy");
+        assert_eq!(opts.features, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(opts.package.as_deref(), Some("pkg"));
+        assert_eq!(opts.extra_command_args, vec!["--workspace".to_string()]);
+        assert_eq!(opts.env, vec![("RUST_LOG".into(), "trace".into())]);
+        assert!(matches!(opts.publish_mode, PublishMode::QueueIfRunning));
+        assert_eq!(opts.refresh_interval_seconds, Some(Duration::from_secs(10)));
+        assert_eq!(opts.separate_child_diagnostics, Some(true));
+        assert!(!opts.check_on_save);
+        assert!(opts.clear_diagnostics_on_check);
+    }
+
+    #[test]
+    fn test_cargo_options_update_from_json_refresh_null_means_no_partial() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"refreshIntervalSeconds": null});
+        opts.update_from_json_obj(json.as_object().unwrap()).unwrap();
+        assert_eq!(opts.refresh_interval_seconds, None);
+    }
+
+    #[test]
+    fn test_cargo_options_update_from_json_refresh_negative_means_no_partial() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"refreshIntervalSeconds": -1});
+        opts.update_from_json_obj(json.as_object().unwrap()).unwrap();
+        assert_eq!(opts.refresh_interval_seconds, None);
+    }
+
+    #[test]
+    fn test_cargo_options_update_from_json_rejects_wrong_type() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"command": 42});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_cargo_options_update_from_json_partial_leaves_others_unchanged() {
+        let mut opts = CargoOptions {
+            command: "clippy".into(),
+            ..CargoOptions::default()
+        };
+        let json = serde_json::json!({"checkOnSave": false});
+        opts.update_from_json_obj(json.as_object().unwrap()).unwrap();
+        assert_eq!(opts.command, "clippy");
+        assert!(!opts.check_on_save);
+    }
+
+    #[test]
+    fn test_cargo_options_reset_restores_defaults() {
+        let mut opts = CargoOptions {
+            command: "clippy".into(),
+            features: vec!["foo".into()],
+            check_on_save: false,
+            ..CargoOptions::default()
+        };
+        opts.reset();
+        let defaults = CargoOptions::default();
+        assert_eq!(opts.command, defaults.command);
+        assert_eq!(opts.features, defaults.features);
+        assert_eq!(opts.check_on_save, defaults.check_on_save);
+    }
+
+    #[test]
+    fn test_bacon_options_update_from_json_full_roundtrip() {
+        let mut opts = BaconOptions::default();
+        let json = serde_json::json!({
+            "locationsFile": "custom.locations",
+            "runInBackground": false,
+            "runInBackgroundCommand": "/usr/local/bin/bacon",
+            "runInBackgroundCommandArguments": "--headless -j custom",
+            "validatePreferences": false,
+            "createPreferencesFile": false,
+            "synchronizeAllOpenFilesWaitMillis": 500,
+            "updateOnSave": false,
+            "updateOnSaveWaitMillis": 250,
+        });
+        opts.update_from_json_obj(json.as_object().unwrap()).unwrap();
+        assert_eq!(opts.locations_file, "custom.locations");
+        assert!(!opts.run_in_background);
+        assert_eq!(opts.run_in_background_command, "/usr/local/bin/bacon");
+        assert_eq!(opts.run_in_background_command_args, "--headless -j custom");
+        assert!(!opts.validate_preferences);
+        assert!(!opts.create_preferences_file);
+        assert_eq!(opts.synchronize_all_open_files_wait, Duration::from_millis(500));
+        assert!(!opts.update_on_save);
+        assert_eq!(opts.update_on_save_wait, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn test_bacon_options_update_from_json_rejects_wrong_type() {
+        let mut opts = BaconOptions::default();
+        let json = serde_json::json!({"runInBackground": "yes"});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_bacon_options_reset_restores_defaults() {
+        let mut opts = BaconOptions {
+            run_in_background: false,
+            locations_file: "foo".into(),
+            ..BaconOptions::default()
+        };
+        opts.reset();
+        let defaults = BaconOptions::default();
+        assert_eq!(opts.run_in_background, defaults.run_in_background);
+        assert_eq!(opts.locations_file, defaults.locations_file);
+    }
+
+    #[test]
+    fn test_correction_from_single_empty_is_remove() {
+        let range = Range::default();
+        let c = Correction::from_single(range, "");
+        assert_eq!(c.label, "Remove");
+        assert_eq!(c.edits.len(), 1);
+        assert_eq!(c.edits[0].new_text, "");
+    }
+
+    #[test]
+    fn test_correction_from_single_nonempty_is_replace() {
+        let range = Range::default();
+        let c = Correction::from_single(range, "foo");
+        assert_eq!(c.label, "Replace with: foo");
+        assert_eq!(c.edits.len(), 1);
+    }
+
+    #[test]
+    fn test_correction_from_multi_all_empty_is_remove() {
+        let edits = vec![
+            CorrectionEdit {
+                range: Range::default(),
+                new_text: "".into(),
+            },
+            CorrectionEdit {
+                range: Range::default(),
+                new_text: "".into(),
+            },
+        ];
+        let c = Correction::from_multi(edits);
+        assert_eq!(c.label, "Remove");
+        assert_eq!(c.edits.len(), 2);
+    }
+
+    #[test]
+    fn test_correction_from_multi_labels_by_first_nonempty() {
+        let edits = vec![
+            CorrectionEdit {
+                range: Range::default(),
+                new_text: "".into(),
+            },
+            CorrectionEdit {
+                range: Range::default(),
+                new_text: "new".into(),
+            },
+        ];
+        let c = Correction::from_multi(edits);
+        assert_eq!(c.label, "Replace with: new");
     }
 }
