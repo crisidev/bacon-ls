@@ -4,10 +4,11 @@ use ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, DeleteFilesParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, ExecuteCommandOptions,
-    ExecuteCommandParams, InitializeParams, InitializeResult, InitializedParams, LSPAny, MessageType,
-    PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities, ServerInfo,
+    ExecuteCommandParams, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions,
+    InitializeParams, InitializeResult, InitializedParams, LSPAny, MessageType, PositionEncodingKind,
+    PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities, ServerInfo,
     TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -69,6 +70,22 @@ impl LanguageServer for BaconLs {
         tracing::trace!("loaded state from lsp settings: {state:#?}");
         drop(state);
 
+        // Declare didDelete/didRename so clients actually send those events
+        // (handlers live in this file). The bacon backend tracks open files
+        // and needs these to keep its set in sync when the user renames/deletes
+        // through the file explorer. Cargo backend is unaffected but the
+        // capability is cheap to advertise.
+        let rust_file_filter = FileOperationFilter {
+            scheme: Some("file".to_string()),
+            pattern: FileOperationPattern {
+                glob: "**/*.rs".to_string(),
+                matches: None,
+                options: None,
+            },
+        };
+        let file_ops_registration = FileOperationRegistrationOptions {
+            filters: vec![rust_file_filter],
+        };
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 // Only support UTF-16 positions for now, which is the default when unspecified
@@ -84,6 +101,14 @@ impl LanguageServer for BaconLs {
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["bacon_ls.run".to_string()],
                     ..Default::default()
+                }),
+                workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: None,
+                    file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                        did_rename: Some(file_ops_registration.clone()),
+                        did_delete: Some(file_ops_registration),
+                        ..Default::default()
+                    }),
                 }),
                 ..Default::default()
             },
@@ -106,8 +131,13 @@ impl LanguageServer for BaconLs {
         self.pull_configuration().await;
 
         let mut state = self.state.write().await;
-        if state.backend.is_none() {
-            Self::init_cargo_backend(&mut state, CargoOptions::default());
+        if state.backend.is_none()
+            && let Err(e) = Self::init_cargo_backend(&mut state, CargoOptions::default())
+        {
+            tracing::error!("{e}");
+            drop(state);
+            self.client.show_message(MessageType::ERROR, e).await;
+            return;
         }
         let backend_chosen = state
             .backend
@@ -156,7 +186,17 @@ impl LanguageServer for BaconLs {
                 drop(state);
                 self.publish_bacon_diagnostics(&params.text_document.uri).await;
             }
-            Some(BackendRuntime::Cargo { .. }) => {
+            Some(BackendRuntime::Cargo { runtime, .. }) => {
+                // Debounce against the initial cargo run: on client startup,
+                // `initialized` kicks off a run and the first `didOpen`
+                // arrives in the same flurry. Skipping here lets the in-flight
+                // run complete instead of being cancelled and restarted.
+                if let Some(ts) = runtime.last_run_started
+                    && ts.elapsed() < std::time::Duration::from_secs(1)
+                {
+                    tracing::trace!("did_open within debounce window of last cargo trigger; skipping");
+                    return;
+                }
                 drop(state);
                 self.publish_cargo_diagnostics().await;
             }

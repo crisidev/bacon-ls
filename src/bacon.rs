@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::Client;
 
-use crate::{BackendRuntime, BaconLs, Correction, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State};
+use crate::{BackendRuntime, BaconLs, Correction, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State, path_to_file_uri};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -161,10 +161,14 @@ impl Bacon {
 
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
         match severity_str {
+            "error" => DiagnosticSeverity::ERROR,
             "warning" => DiagnosticSeverity::WARNING,
             "info" | "information" | "note" | "failure-note" => DiagnosticSeverity::INFORMATION,
             "hint" | "help" => DiagnosticSeverity::HINT,
-            _ => DiagnosticSeverity::ERROR,
+            other => {
+                tracing::warn!("unknown bacon severity level {other:?}, defaulting to INFORMATION");
+                DiagnosticSeverity::INFORMATION
+            }
         }
     }
 
@@ -202,7 +206,7 @@ impl Bacon {
             }
         };
 
-        let path = match str::parse::<Uri>(&format!("file://{}", file_path.display())) {
+        let path = match str::parse::<Uri>(&path_to_file_uri(&file_path.display().to_string())) {
             Ok(url) => url,
             Err(e) => {
                 tracing::error!("error parsing file path {}: {}", file_path.display(), e);
@@ -212,8 +216,8 @@ impl Bacon {
 
         let mut message = line_split[6].replace("\\n", "\n").trim_end_matches('\n').to_string();
         let range = Range::new(
-            Position::new(line_start - 1, column_start - 1),
-            Position::new(line_end - 1, column_end - 1),
+            Position::new(line_start.saturating_sub(1), column_start.saturating_sub(1)),
+            Position::new(line_end.saturating_sub(1), column_end.saturating_sub(1)),
         );
         let replacement = line_split[8];
         let data = if replacement != "none" {
@@ -252,7 +256,7 @@ impl Bacon {
     fn deduplicate_diagnostics(path: Uri, uri: &Uri, diagnostic: Diagnostic, diagnostics: &mut Vec<(Uri, Diagnostic)>) {
         if &path == uri
             && !diagnostics.iter().any(|(existing_path, existing_diagnostic)| {
-                existing_path.path().as_str() == path.path().as_str()
+                existing_path == &path
                     && diagnostic.range == existing_diagnostic.range
                     && diagnostic.severity == existing_diagnostic.severity
                     && diagnostic.message == existing_diagnostic.message
@@ -340,10 +344,10 @@ impl Bacon {
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
-                let mut folder_path = folder
-                    .uri
-                    .to_file_path()
-                    .expect("the workspace folder sent by the editor is not a file path");
+                let Some(mut folder_path) = folder.uri.to_file_path() else {
+                    tracing::warn!("skipping workspace folder with non-file URI: {}", folder.uri.as_str());
+                    continue;
+                };
                 if let Some(git_root) = BaconLs::find_git_root_directory(&folder_path).await
                     && git_root.join("Cargo.toml").exists()
                 {
@@ -429,14 +433,14 @@ impl Bacon {
             .collect::<Vec<Diagnostic>>()
     }
 
-    pub(crate) async fn syncronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
+    pub(crate) async fn synchronize_diagnostics(state: Arc<RwLock<State>>, client: Arc<Client>) {
         tracing::info!("starting background task in charge of syncronizing diagnostics for all open files");
         let (tx, rx) = flume::unbounded::<DebounceEventResult>();
 
         let (locations_file, proj_root, wait_time, shutdown_token) = {
             let state = state.read().await;
             let Some(BackendRuntime::Bacon { config, runtime }) = &state.backend else {
-                tracing::error!("syncronize_diagnostics called without bacon backend");
+                tracing::error!("synchronize_diagnostics called without bacon backend");
                 return;
             };
             (
@@ -447,11 +451,22 @@ impl Bacon {
             )
         };
 
-        let mut watcher = new_debouncer(wait_time, None, move |ev: DebounceEventResult| {
+        let mut watcher = match new_debouncer(wait_time, None, move |ev: DebounceEventResult| {
             // Returns an error if all senders are dropped.
             let _res = tx.send(ev);
-        })
-        .expect("failed to create file watcher");
+        }) {
+            Ok(watcher) => watcher,
+            Err(e) => {
+                let msg = format!(
+                    "bacon-ls could not create a file watcher: {e}. \
+                     Diagnostics will still update on save but open-file \
+                     synchronization is disabled."
+                );
+                tracing::error!("{msg}");
+                client.show_message(ls_types::MessageType::WARNING, msg).await;
+                return;
+            }
+        };
 
         let locations_file_path =
             proj_root.map_or_else(|| PathBuf::from(&locations_file), |root| root.join(&locations_file));
@@ -492,11 +507,13 @@ impl Bacon {
                 continue;
             }
 
-            let loop_state = state.read().await;
-            let Some(BackendRuntime::Bacon { runtime, .. }) = &loop_state.backend else {
+            let mut loop_state = state.write().await;
+            let Some(BackendRuntime::Bacon { runtime, .. }) = &mut loop_state.backend else {
                 tracing::error!("backend changed during sync loop");
                 return;
             };
+            runtime.diagnostics_version = runtime.diagnostics_version.wrapping_add(1);
+            let version = runtime.diagnostics_version;
             let open_files = runtime.open_files.clone();
             let workspace_folders = loop_state.workspace_folders.clone();
             drop(loop_state);
@@ -505,7 +522,7 @@ impl Bacon {
                 open_files.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
             );
             for uri in open_files.iter() {
-                Self::publish_diagnostics(&client, uri, &locations_file, workspace_folders.as_deref()).await;
+                Self::publish_diagnostics(&client, uri, &locations_file, workspace_folders.as_deref(), version).await;
             }
         }
     }
@@ -515,10 +532,13 @@ impl Bacon {
         uri: &Uri,
         locations_file_name: &str,
         workspace_folders: Option<&[WorkspaceFolder]>,
+        version: i32,
     ) {
         let diagnostics_vec = Self::diagnostics_vec(uri, locations_file_name, workspace_folders).await;
         tracing::info!("sent {} bacon diagnostics for {uri:?}", diagnostics_vec.len());
-        client.publish_diagnostics(uri.clone(), diagnostics_vec, None).await;
+        client
+            .publish_diagnostics(uri.clone(), diagnostics_vec, Some(version))
+            .await;
     }
 }
 
@@ -800,5 +820,25 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
         let diagnostics_vec =
             Bacon::diagnostics_vec(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics_vec.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_severity_known_levels() {
+        assert_eq!(Bacon::parse_severity("error"), DiagnosticSeverity::ERROR);
+        assert_eq!(Bacon::parse_severity("warning"), DiagnosticSeverity::WARNING);
+        assert_eq!(Bacon::parse_severity("note"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Bacon::parse_severity("info"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Bacon::parse_severity("information"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Bacon::parse_severity("failure-note"), DiagnosticSeverity::INFORMATION);
+        assert_eq!(Bacon::parse_severity("help"), DiagnosticSeverity::HINT);
+        assert_eq!(Bacon::parse_severity("hint"), DiagnosticSeverity::HINT);
+    }
+
+    #[test]
+    fn test_parse_severity_unknown_level_defaults_to_information() {
+        assert_eq!(
+            Bacon::parse_severity("future-rustc-level"),
+            DiagnosticSeverity::INFORMATION
+        );
     }
 }

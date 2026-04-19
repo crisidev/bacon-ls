@@ -68,6 +68,7 @@ dependencies = [
  "ls-types",
  "notify",
  "notify-debouncer-full",
+ "percent-encoding",
  "pretty_assertions",
  "serde",
  "serde_json",
