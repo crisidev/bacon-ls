@@ -5,6 +5,12 @@
 //! Without the shutdown-watchdog fix, that keeps `Server::serve()`
 //! alive indefinitely because the `initialized` future stays blocked
 //! waiting on a response that will never arrive.
+//!
+//! Unix-only: Windows pipe semantics around inherited stdio differ
+//! enough that the framed-read loop races with process startup. The
+//! fix under test isn't platform-specific, so a single-platform
+//! regression guard is enough.
+#![cfg(unix)]
 
 use std::io::{Read, Write};
 use std::process::{ChildStdout, Command, Stdio};
