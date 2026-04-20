@@ -185,7 +185,7 @@ impl CargoOptions {
             );
         }
 
-        if let Some(value) = cargo_obj.get("extraCommandArguments") {
+        if let Some(value) = cargo_obj.get("extraArgs") {
             self.extra_command_args = value
                 .as_array()
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
@@ -1254,7 +1254,7 @@ mod tests {
             "command": "clippy",
             "features": ["a", "b"],
             "package": "pkg",
-            "extraCommandArguments": ["--workspace"],
+            "extraArgs": ["--workspace"],
             "env": {"RUST_LOG": "trace"},
             "cancelRunning": false,
             "refreshIntervalSeconds": 10,

@@ -131,7 +131,7 @@ backend starts with sensible defaults. The complete schema is:
       "command": "check",                 // "check" or "clippy"
       "features": [],                     // cargo --features list
       "package": null,                    // cargo -p <package>
-      "extraCommandArguments": [],        // appended verbatim after the cargo command
+      "extraArgs": [],                    // appended verbatim after the cargo command
       "env": {},                          // extra environment variables (string -> string)
       "cancelRunning": true,              // cancel an in-flight run when a new one is triggered
       "refreshIntervalSeconds": 5,        // partial publish interval; null/negative = wait until done
@@ -179,7 +179,7 @@ diagnostics — no `bacon` process required.
   are `"check"` and `"clippy"`.
 * `features`: list of features passed as `--features a,b,c`.
 * `package`: when set, passed as `-p <package>` (useful in workspaces).
-* `extraCommandArguments`: appended verbatim after the subcommand. Use this for
+* `extraArgs`: appended verbatim after the subcommand. Use this for
   e.g. `["--workspace", "--all-targets", "--all-features"]`.
 * `env`: map of additional environment variables for the cargo invocation.
 * `cancelRunning` (default `true`): when a new run is requested while another is

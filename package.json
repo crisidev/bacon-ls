@@ -102,7 +102,7 @@
           "default": null,
           "description": "Cargo backend: when set, passed as -p <package> (useful in workspaces)."
         },
-        "bacon_ls.cargo.extraCommandArguments": {
+        "bacon_ls.cargo.extraArgs": {
           "scope": "machine-overridable",
           "type": "array",
           "items": {
