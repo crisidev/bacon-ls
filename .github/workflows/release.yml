@@ -82,7 +82,10 @@ jobs:
         run: sudo apt-get install gcc-multilib g++-multilib libc6-dev-i386
       - run: cargo build --target ${{ matrix.target }} --release
         env:
-          PKG_CONFIG_ALLOW_CROSS: 1 
+          PKG_CONFIG_ALLOW_CROSS: 1
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
       - run: npm ci
       - name: vsce package
         # we can only publish a single linux-x64 and linux-arm64 package
