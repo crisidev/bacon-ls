@@ -353,14 +353,24 @@ impl LanguageServer for BaconLs {
             match backend {
                 BackendRuntime::Bacon { mut runtime, .. } => {
                     runtime.shutdown_token.cancel();
+                    // Cap each await so a stuck bacon subprocess or watcher can't
+                    // keep the LSP alive past the client's restart deadline.
+                    let deadline = std::time::Duration::from_secs(2);
                     if let Some(handle) = runtime.command_handle.take() {
                         tracing::info!("terminating bacon from running in background");
-                        if let Err(e) = handle.await {
-                            tracing::warn!("bacon command task failed during shutdown: {e}");
+                        match tokio::time::timeout(deadline, handle).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                tracing::warn!("bacon command task failed during shutdown: {e}")
+                            }
+                            Err(_) => tracing::warn!("bacon command task timed out during shutdown"),
                         }
                     }
-                    if let Err(e) = runtime.sync_files_handle.await {
-                        tracing::warn!("sync files task failed during shutdown: {e}");
+                    let sync_handle = runtime.sync_files_handle;
+                    match tokio::time::timeout(deadline, sync_handle).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => tracing::warn!("sync files task failed during shutdown: {e}"),
+                        Err(_) => tracing::warn!("sync files task timed out during shutdown"),
                     }
                 }
                 BackendRuntime::Cargo { runtime, .. } => {
@@ -376,6 +386,18 @@ impl LanguageServer for BaconLs {
                 format!("{PKG_NAME} v{PKG_VERSION} lsp server stopped"),
             )
             .await;
+
+        // Force-exit watchdog. An in-flight server-to-client request (e.g. the
+        // `workspace/configuration` we issue from `initialized`) can keep
+        // `Server::serve()` alive past the `exit` notification, because there's
+        // no way to cancel a waiter on a client response that will never
+        // arrive. Without this, `:LspRestart` in Neovim sees the server never
+        // die and gives up on spawning a fresh instance.
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            std::process::exit(0);
+        });
+
         Ok(())
     }
 }

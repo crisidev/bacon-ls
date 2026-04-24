@@ -521,6 +521,12 @@ impl BaconLs {
         // Start the service.
         let (service, socket) = LspService::new(Self::new);
         Server::new(stdin, stdout, socket).serve(service).await;
+        // Force the process to terminate instead of waiting for the tokio
+        // runtime to drain. Some background tasks (bacon subprocess readers,
+        // file watchers) can linger past the `exit` notification; if the
+        // process doesn't die promptly, `:LspRestart` in Neovim gives up
+        // before starting a fresh instance.
+        std::process::exit(0);
     }
 
     async fn find_git_root_directory(path: &Path) -> Option<PathBuf> {
@@ -566,17 +572,22 @@ impl BaconLs {
     async fn pull_configuration(&self) {
         tracing::debug!("pull_configuration");
 
-        let response = match self
-            .client
-            .configuration(vec![ls_types::ConfigurationItem {
-                scope_uri: None,
-                section: Some("bacon_ls".to_string()),
-            }])
-            .await
-        {
-            Ok(response) => response,
-            Err(e) => {
+        let configuration_fut = self.client.configuration(vec![ls_types::ConfigurationItem {
+            scope_uri: None,
+            section: Some("bacon_ls".to_string()),
+        }]);
+        // A client that never answers `workspace/configuration` (e.g. one
+        // mid-teardown) would otherwise keep this await alive forever, which
+        // in turn pins the `initialized` future inside the server loop and
+        // blocks a clean shutdown.
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(5), configuration_fut).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
                 tracing::error!("failed to pull configuration: {e}");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!("workspace/configuration request timed out; proceeding with defaults");
                 return;
             }
         };
