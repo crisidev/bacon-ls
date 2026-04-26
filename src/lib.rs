@@ -291,7 +291,7 @@ impl Default for CargoOptions {
             features: vec![],
             extra_command_args: vec![],
             package: None,
-            refresh_interval_seconds: Some(Duration::from_secs(5)),
+            refresh_interval_seconds: Some(Duration::from_secs(1)),
             separate_child_diagnostics: None,
             check_on_save: true,
             clear_diagnostics_on_check: false,
@@ -870,16 +870,23 @@ impl BaconLs {
             },
         };
 
-        if clear_diagnostics_on_check {
-            for file in &runtime.files_with_diags {
-                self.client
-                    .publish_diagnostics(file.clone(), vec![], Some(version))
-                    .await;
-            }
-            runtime.files_with_diags.clear();
-        }
+        // Drain the URIs we need to clear into a local Vec, then drop the
+        // state lock BEFORE doing any LSP IO. Holding the write guard across
+        // awaited publishes blocks every other handler (did_open, did_close,
+        // codeAction, …) for the duration of the round-trips.
+        let files_to_clear: Vec<Uri> = if clear_diagnostics_on_check {
+            runtime.files_with_diags.drain().collect()
+        } else {
+            Vec::new()
+        };
 
         drop(guard);
+
+        for file in files_to_clear {
+            self.client
+                .publish_diagnostics(file, vec![], Some(version))
+                .await;
+        }
 
         let token = ProgressToken::Number(version);
         let progress = self
@@ -909,34 +916,52 @@ impl BaconLs {
             // partial publishes during the cargo run.
             let mut diagnostics_map = HashMap::<Uri, (Vec<Diagnostic>, HashSet<DiagKey>, bool)>::new();
 
+            enum AccumulateResult {
+                Closed,
+                NewDiagnostic,
+                Duplicate,
+            }
+
             fn accumulate_diagnostics(
                 recv_result: Result<(Uri, Diagnostic), RecvError>,
                 diagnostics_map: &mut HashMap<Uri, (Vec<Diagnostic>, HashSet<DiagKey>, bool)>,
-            ) -> bool {
+            ) -> AccumulateResult {
                 let Ok((url, diagnostic)) = recv_result else {
-                    return true;
+                    return AccumulateResult::Closed;
                 };
                 let (diagnostics, seen, dirty) = diagnostics_map.entry(url).or_default();
                 if seen.insert(diag_key(&diagnostic)) {
                     diagnostics.push(diagnostic);
                     *dirty = true;
+                    AccumulateResult::NewDiagnostic
+                } else {
+                    AccumulateResult::Duplicate
                 }
-                false
             }
 
             if let Some(refresh_interval) = refresh_interval {
+                // The very first diagnostic of a run is published immediately
+                // — waiting up to `refresh_interval` for the editor to show
+                // *something* is the most user-visible source of latency. After
+                // the first publish, subsequent diagnostics accumulate and are
+                // flushed every `refresh_interval`.
+                let mut first_published = false;
                 let mut t = std::time::Instant::now();
                 loop {
+                    let mut got_new = false;
                     tokio::select! {
                         result = rx.recv_async() => {
-                            if accumulate_diagnostics(result, &mut diagnostics_map) {
-                                break;
+                            match accumulate_diagnostics(result, &mut diagnostics_map) {
+                                AccumulateResult::Closed => break,
+                                AccumulateResult::NewDiagnostic => got_new = true,
+                                AccumulateResult::Duplicate => {}
                             }
                         }
                         _ = tokio::time::sleep_until(tokio::time::Instant::from_std(t + refresh_interval)) => {}
                     }
 
-                    if t.elapsed() >= refresh_interval {
+                    let publish_first = got_new && !first_published;
+                    if publish_first || t.elapsed() >= refresh_interval {
                         for (url, (diagnostics, _seen, dirty)) in diagnostics_map.iter_mut() {
                             if *dirty {
                                 consumer_client
@@ -945,12 +970,19 @@ impl BaconLs {
                                 *dirty = false;
                             }
                         }
+                        if publish_first {
+                            tracing::debug!("first diagnostic published; switching to refresh-interval cadence");
+                            first_published = true;
+                        }
                         t = std::time::Instant::now();
                     }
                 }
             } else {
                 loop {
-                    if accumulate_diagnostics(rx.recv_async().await, &mut diagnostics_map) {
+                    if matches!(
+                        accumulate_diagnostics(rx.recv_async().await, &mut diagnostics_map),
+                        AccumulateResult::Closed
+                    ) {
                         break;
                     }
                 }

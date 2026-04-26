@@ -137,7 +137,7 @@ backend starts with sensible defaults. The complete schema is:
       "extraArgs": [],                    // appended verbatim after the cargo command
       "env": {},                          // extra environment variables (string -> string)
       "cancelRunning": true,              // cancel an in-flight run when a new one is triggered
-      "refreshIntervalSeconds": 5,        // partial publish interval; null/negative = wait until done
+      "refreshIntervalSeconds": 1,        // partial publish interval; null/negative = wait until done
       "separateChildDiagnostics": null,   // override "related information" support; null = follow client
       "checkOnSave": true,                // trigger cargo on textDocument/didSave
       "clearDiagnosticsOnCheck": false    // clear existing diagnostics before each run
@@ -188,9 +188,12 @@ diagnostics — no `bacon` process required.
 * `cancelRunning` (default `true`): when a new run is requested while another is
   still running, cancel the in-flight one. Set to `false` to instead queue at most
   one follow-up run after the current one completes.
-* `refreshIntervalSeconds` (default `5`): how often to publish a partial snapshot
-  of the diagnostics gathered so far while cargo is still running. Set to `null`
-  or a negative number to only publish once cargo has finished.
+* `refreshIntervalSeconds` (default `1`): how often to publish a partial snapshot
+  of the diagnostics gathered so far while cargo is still running. The very
+  first diagnostic of a run is always published immediately so the editor lights
+  up as soon as cargo emits something; this interval governs the cadence of
+  refreshes after that. Set to `null` or a negative number to only publish once
+  cargo has finished.
 * `separateChildDiagnostics` (default `null`): cargo emits some hints as children
   of a parent diagnostic. When `null` we follow the client's
   `relatedInformation` capability; set to `true` to always emit children as
