@@ -883,9 +883,7 @@ impl BaconLs {
         drop(guard);
 
         for file in files_to_clear {
-            self.client
-                .publish_diagnostics(file, vec![], Some(version))
-                .await;
+            self.client.publish_diagnostics(file, vec![], Some(version)).await;
         }
 
         let token = ProgressToken::Number(version);
