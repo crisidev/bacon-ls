@@ -228,10 +228,7 @@ fn cargo_backend_code_action_replaces_unused_variable() {
     // Reading the binding once silences the "unused variable" hint into a
     // pure unused-variable warning whose help-child carries the
     // MachineApplicable replacement we want to surface as a QuickFix.
-    write_fixture(
-        tmp.path(),
-        "pub fn warn_me() -> i32 { let unused_var = 42; 0 }\n",
-    );
+    write_fixture(tmp.path(), "pub fn warn_me() -> i32 { let unused_var = 42; 0 }\n");
 
     let mut child = spawn_server(tmp.path());
     let stdout = child.stdout.take().expect("stdout");
@@ -290,7 +287,11 @@ fn cargo_backend_code_action_replaces_unused_variable() {
     // Confirm the action carries an actual workspace edit pointing at our URI.
     let action_with_edit = actions
         .iter()
-        .find(|a| a.get("title").and_then(|t| t.as_str()).is_some_and(|t| t.starts_with("Replace with: _")))
+        .find(|a| {
+            a.get("title")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t.starts_with("Replace with: _"))
+        })
         .unwrap();
     let edit = action_with_edit
         .get("edit")

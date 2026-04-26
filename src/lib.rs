@@ -1558,15 +1558,11 @@ mod tests {
         let mut opts = CargoOptions::default();
         // Default is CancelRunning.
         assert!(matches!(opts.publish_mode, PublishMode::CancelRunning));
-        opts.update_from_json_obj(
-            serde_json::json!({"cancelRunning": false}).as_object().unwrap(),
-        )
-        .unwrap();
+        opts.update_from_json_obj(serde_json::json!({"cancelRunning": false}).as_object().unwrap())
+            .unwrap();
         assert!(matches!(opts.publish_mode, PublishMode::QueueIfRunning));
-        opts.update_from_json_obj(
-            serde_json::json!({"cancelRunning": true}).as_object().unwrap(),
-        )
-        .unwrap();
+        opts.update_from_json_obj(serde_json::json!({"cancelRunning": true}).as_object().unwrap())
+            .unwrap();
         assert!(matches!(opts.publish_mode, PublishMode::CancelRunning));
     }
 
@@ -1579,7 +1575,9 @@ mod tests {
         // `as_bool()` on a non-bool returns None — and we feed that through
         // unchanged, so a `null` (or anything non-bool) clears the override.
         opts.update_from_json_obj(
-            serde_json::json!({"separateChildDiagnostics": null}).as_object().unwrap(),
+            serde_json::json!({"separateChildDiagnostics": null})
+                .as_object()
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(opts.separate_child_diagnostics, None);

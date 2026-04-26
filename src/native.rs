@@ -936,9 +936,7 @@ mod tests {
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.source, Some(PKG_NAME.to_string()));
         assert!(
-            diag.related_information
-                .as_ref()
-                .is_some_and(|r| !r.is_empty()),
+            diag.related_information.as_ref().is_some_and(|r| !r.is_empty()),
             "help child should attach as related information when supported"
         );
     }

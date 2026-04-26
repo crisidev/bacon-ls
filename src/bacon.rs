@@ -1,9 +1,9 @@
 use std::borrow::Cow;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use std::env;
 
 use ls_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 use notify_debouncer_full::{DebounceEventResult, new_debouncer};
@@ -149,10 +149,7 @@ impl Bacon {
     /// (stack-based) so it doesn't grow the async stack on deep trees, and uses
     /// `tokio::fs` so the directory walk yields to the runtime instead of
     /// blocking the executor on large workspaces.
-    pub(crate) async fn find_bacon_locations(
-        root: &Path,
-        locations_file_name: &str,
-    ) -> std::io::Result<Vec<PathBuf>> {
+    pub(crate) async fn find_bacon_locations(root: &Path, locations_file_name: &str) -> std::io::Result<Vec<PathBuf>> {
         let mut results = Vec::new();
         let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
@@ -895,10 +892,8 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
     #[test]
     fn test_parse_bacon_diagnostic_line_with_replacement_attaches_correction() {
-        let line =
-            "warning|:|src/lib.rs|:|10|:|10|:|5|:|8|:|unused import|:|none|:|use foo::bar;";
-        let (uri, diag) =
-            Bacon::parse_bacon_diagnostic_line(line, Path::new("/proj")).expect("must parse");
+        let line = "warning|:|src/lib.rs|:|10|:|10|:|5|:|8|:|unused import|:|none|:|use foo::bar;";
+        let (uri, diag) = Bacon::parse_bacon_diagnostic_line(line, Path::new("/proj")).expect("must parse");
         assert_eq!(uri.to_string(), "file:///proj/src/lib.rs");
         assert!(
             diag.data.is_some(),
@@ -1007,7 +1002,9 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     #[tokio::test]
     async fn test_find_bacon_locations_empty_dir_returns_empty() {
         let tmp = TempDir::new().unwrap();
-        let found = Bacon::find_bacon_locations(tmp.path(), ".bacon-locations").await.unwrap();
+        let found = Bacon::find_bacon_locations(tmp.path(), ".bacon-locations")
+            .await
+            .unwrap();
         assert!(found.is_empty());
     }
 
