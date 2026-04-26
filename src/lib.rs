@@ -57,6 +57,26 @@ pub(crate) fn path_to_file_uri(path: &str) -> String {
     format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
 }
 
+/// Hash key for deduplicating diagnostics that share the same range, severity,
+/// and message. `DiagnosticSeverity` is `Eq` but not `Hash` in `ls-types`, so we
+/// project it down to a small integer tag.
+pub(crate) type DiagKey = (Range, i32, String);
+
+pub(crate) fn diag_key(d: &Diagnostic) -> DiagKey {
+    (d.range, severity_tag(d.severity), d.message.clone())
+}
+
+fn severity_tag(s: Option<DiagnosticSeverity>) -> i32 {
+    match s {
+        None => 0,
+        Some(s) if s == DiagnosticSeverity::ERROR => 1,
+        Some(s) if s == DiagnosticSeverity::WARNING => 2,
+        Some(s) if s == DiagnosticSeverity::INFORMATION => 3,
+        Some(s) if s == DiagnosticSeverity::HINT => 4,
+        Some(_) => -1,
+    }
+}
+
 /// bacon-ls - https://github.com/crisidev/bacon-ls
 #[derive(Debug, FromArgs)]
 pub struct Args {
@@ -884,21 +904,20 @@ impl BaconLs {
 
         let consumer_client = self.client.clone();
         let diagnostic_consumer = async move {
-            let mut diagnostics_map = HashMap::<Uri, (Vec<Diagnostic>, bool)>::new();
+            // Per-URI bucket: the diagnostics to publish, a `seen` set keyed by
+            // (range, severity, message) for O(1) dedup, and a dirty flag for
+            // partial publishes during the cargo run.
+            let mut diagnostics_map = HashMap::<Uri, (Vec<Diagnostic>, HashSet<DiagKey>, bool)>::new();
 
             fn accumulate_diagnostics(
                 recv_result: Result<(Uri, Diagnostic), RecvError>,
-                diagnostics_map: &mut HashMap<Uri, (Vec<Diagnostic>, bool)>,
+                diagnostics_map: &mut HashMap<Uri, (Vec<Diagnostic>, HashSet<DiagKey>, bool)>,
             ) -> bool {
                 let Ok((url, diagnostic)) = recv_result else {
                     return true;
                 };
-                let (diagnostics, dirty) = diagnostics_map.entry(url).or_default();
-                if !diagnostics.iter().any(|existing| {
-                    diagnostic.range == existing.range
-                        && diagnostic.severity == existing.severity
-                        && diagnostic.message == existing.message
-                }) {
+                let (diagnostics, seen, dirty) = diagnostics_map.entry(url).or_default();
+                if seen.insert(diag_key(&diagnostic)) {
                     diagnostics.push(diagnostic);
                     *dirty = true;
                 }
@@ -918,7 +937,7 @@ impl BaconLs {
                     }
 
                     if t.elapsed() >= refresh_interval {
-                        for (url, (diagnostics, dirty)) in diagnostics_map.iter_mut() {
+                        for (url, (diagnostics, _seen, dirty)) in diagnostics_map.iter_mut() {
                             if *dirty {
                                 consumer_client
                                     .publish_diagnostics(url.clone(), diagnostics.clone(), Some(version))
@@ -1018,12 +1037,12 @@ impl BaconLs {
 
         for file in cargo_rt.files_with_diags.drain() {
             // Add empty diagnostics so that it get cleared later
-            let _ = diagnostics.entry(file).or_insert((vec![], true));
+            let _ = diagnostics.entry(file).or_insert((vec![], HashSet::new(), true));
         }
 
         let mut num_warnings = 0;
         let mut num_errors = 0;
-        for (uri, (diagnostics, is_dirty)) in diagnostics.into_iter() {
+        for (uri, (diagnostics, _seen, is_dirty)) in diagnostics.into_iter() {
             tracing::debug!(uri = uri.to_string(), "sent {} cargo diagnostics", diagnostics.len());
             for diagnostic in &diagnostics {
                 match diagnostic.severity {
@@ -1431,5 +1450,209 @@ mod tests {
         ];
         let c = Correction::from_multi(edits);
         assert_eq!(c.label, "Replace with: new");
+    }
+
+    #[test]
+    fn test_severity_tag_distinguishes_levels() {
+        assert_eq!(severity_tag(None), 0);
+        assert_eq!(severity_tag(Some(DiagnosticSeverity::ERROR)), 1);
+        assert_eq!(severity_tag(Some(DiagnosticSeverity::WARNING)), 2);
+        assert_eq!(severity_tag(Some(DiagnosticSeverity::INFORMATION)), 3);
+        assert_eq!(severity_tag(Some(DiagnosticSeverity::HINT)), 4);
+        // All four constants must hash to distinct tags or dedup will fold
+        // legitimately-different diagnostics together.
+        let tags = [
+            severity_tag(Some(DiagnosticSeverity::ERROR)),
+            severity_tag(Some(DiagnosticSeverity::WARNING)),
+            severity_tag(Some(DiagnosticSeverity::INFORMATION)),
+            severity_tag(Some(DiagnosticSeverity::HINT)),
+        ];
+        let unique: HashSet<_> = tags.iter().collect();
+        assert_eq!(unique.len(), tags.len());
+    }
+
+    #[test]
+    fn test_diag_key_collides_for_equal_diagnostics() {
+        let a = Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "hi".into(),
+            ..Diagnostic::default()
+        };
+        let b = a.clone();
+        assert_eq!(diag_key(&a), diag_key(&b));
+    }
+
+    #[test]
+    fn test_diag_key_differs_when_message_differs() {
+        let mut a = Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "first".into(),
+            ..Diagnostic::default()
+        };
+        let b = a.clone();
+        a.message = "second".into();
+        assert_ne!(diag_key(&a), diag_key(&b));
+    }
+
+    #[test]
+    fn test_path_to_file_uri_empty_path() {
+        // Empty path yields the trivial `file://` URI. Useful guard against
+        // future regressions in the encoding helper when fed degenerate input.
+        assert_eq!(path_to_file_uri(""), "file://");
+    }
+
+    #[test]
+    fn test_correction_from_single_label_replaces_with_text() {
+        let c = Correction::from_single(Range::default(), "x");
+        assert_eq!(c.label, "Replace with: x");
+        assert_eq!(c.edits.len(), 1);
+        assert_eq!(c.edits[0].new_text, "x");
+    }
+
+    #[test]
+    fn test_correction_from_multi_empty_edits_is_remove() {
+        let c = Correction::from_multi(vec![]);
+        assert_eq!(c.label, "Remove");
+        assert!(c.edits.is_empty());
+    }
+
+    #[test]
+    fn test_cargo_options_env_roundtrip_preserves_order_in_serde_iteration() {
+        // serde_json::Map preserves insertion order. We rely on that for
+        // reproducible env propagation into cargo.
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({
+            "env": {"A": "1", "B": "2", "C": "3"}
+        });
+        opts.update_from_json_obj(json.as_object().unwrap()).unwrap();
+        assert_eq!(opts.env.len(), 3);
+        let keys: Vec<_> = opts.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn test_cargo_options_update_rejects_non_object_env() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"env": ["A=1"]});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_cargo_options_update_rejects_non_string_env_value() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"env": {"A": 1}});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_cargo_options_update_rejects_non_string_feature_item() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"features": ["a", 2, "c"]});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_cargo_options_publish_mode_toggle_via_cancel_running() {
+        let mut opts = CargoOptions::default();
+        // Default is CancelRunning.
+        assert!(matches!(opts.publish_mode, PublishMode::CancelRunning));
+        opts.update_from_json_obj(
+            serde_json::json!({"cancelRunning": false}).as_object().unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(opts.publish_mode, PublishMode::QueueIfRunning));
+        opts.update_from_json_obj(
+            serde_json::json!({"cancelRunning": true}).as_object().unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(opts.publish_mode, PublishMode::CancelRunning));
+    }
+
+    #[test]
+    fn test_cargo_options_separate_child_diagnostics_can_unset() {
+        let mut opts = CargoOptions {
+            separate_child_diagnostics: Some(true),
+            ..CargoOptions::default()
+        };
+        // `as_bool()` on a non-bool returns None — and we feed that through
+        // unchanged, so a `null` (or anything non-bool) clears the override.
+        opts.update_from_json_obj(
+            serde_json::json!({"separateChildDiagnostics": null}).as_object().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(opts.separate_child_diagnostics, None);
+    }
+
+    #[tokio::test]
+    async fn test_find_git_root_directory_returns_none_outside_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = BaconLs::find_git_root_directory(tmp.path()).await;
+        assert_eq!(root, None);
+    }
+
+    #[tokio::test]
+    async fn test_find_git_root_directory_finds_top_of_repo() {
+        // `git -C <subdir> rev-parse --show-toplevel` should resolve to the
+        // crate's own repo root regardless of which subdirectory we point at.
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = crate_root.join("src");
+        let from_subdir = BaconLs::find_git_root_directory(&src).await;
+        assert!(from_subdir.is_some(), "src/ is inside a git repo");
+        let from_root = BaconLs::find_git_root_directory(crate_root).await.unwrap();
+        // Both lookups should resolve to the same toplevel.
+        assert_eq!(from_subdir.unwrap(), from_root);
+    }
+
+    #[test]
+    fn test_init_cargo_backend_uses_existing_project_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mut state = State {
+            project_root: Some(root.clone()),
+            ..State::default()
+        };
+        // Normally we'd hold an RwLockWriteGuard, but for this unit test we
+        // adapt the API by going through a real lock.
+        let lock = RwLock::new(std::mem::take(&mut state));
+        let mut guard = lock.try_write().unwrap();
+        BaconLs::init_cargo_backend(&mut guard, CargoOptions::default())
+            .expect("init should succeed with explicit project root");
+        match &guard.backend {
+            Some(BackendRuntime::Cargo { runtime, .. }) => {
+                assert_eq!(runtime.build_folder, root);
+                assert_eq!(runtime.run_state, CargoRunState::Idle);
+                assert_eq!(runtime.diagnostics_version, 0);
+            }
+            other => panic!("expected Cargo backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_init_cargo_backend_falls_back_to_cwd_when_no_project_root() {
+        let mut state = State::default();
+        let lock = RwLock::new(std::mem::take(&mut state));
+        let mut guard = lock.try_write().unwrap();
+        BaconLs::init_cargo_backend(&mut guard, CargoOptions::default())
+            .expect("init should fall back to CWD when project root is unset");
+        match &guard.backend {
+            Some(BackendRuntime::Cargo { runtime, .. }) => {
+                let cwd = std::env::current_dir().unwrap();
+                assert_eq!(runtime.build_folder, cwd, "should fall back to CWD");
+            }
+            other => panic!("expected Cargo backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_with_env_does_not_leak_into_args() {
+        // Sanity: env values are not added as command-line args.
+        let opts = CargoOptions {
+            env: vec![("A".into(), "1".into())],
+            ..CargoOptions::default()
+        };
+        let args = opts.build_command_args();
+        assert!(args.iter().all(|a| !a.contains("A=1") && !a.contains("=1")));
     }
 }

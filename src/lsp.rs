@@ -7,8 +7,9 @@ use ls_types::{
     ExecuteCommandParams, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions,
     InitializeParams, InitializeResult, InitializedParams, LSPAny, MessageType, PositionEncodingKind,
     PublishDiagnosticsClientCapabilities, RenameFilesParams, ServerCapabilities, ServerInfo,
-    TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities, WorkspaceServerCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp_server::{LanguageServer, jsonrpc};
 
@@ -90,7 +91,16 @@ impl LanguageServer for BaconLs {
             capabilities: ServerCapabilities {
                 // Only support UTF-16 positions for now, which is the default when unspecified
                 position_encoding: Some(PositionEncodingKind::UTF16),
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+                // We never read document text — diagnostics come from bacon's locations file
+                // or from cargo's JSON output. Ask only for open/close + save notifications;
+                // skip change events so the client doesn't ship the whole buffer on every
+                // keystroke.
+                text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+                    open_close: Some(true),
+                    change: Some(TextDocumentSyncKind::NONE),
+                    save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                    ..Default::default()
+                })),
                 code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
                     code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
                     work_done_progress_options: WorkDoneProgressOptions {

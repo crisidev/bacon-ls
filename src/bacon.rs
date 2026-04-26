@@ -1,10 +1,9 @@
 use std::borrow::Cow;
-use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{env, fs};
+use std::env;
 
 use ls_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFolder};
 use notify_debouncer_full::{DebounceEventResult, new_debouncer};
@@ -17,7 +16,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_lsp_server::Client;
 
-use crate::{BackendRuntime, BaconLs, Correction, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State, path_to_file_uri};
+use std::collections::HashSet;
+
+use crate::{
+    BackendRuntime, BaconLs, Correction, DiagKey, DiagnosticData, LOCATIONS_FILE, PKG_NAME, State, diag_key,
+    path_to_file_uri,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct BaconConfig {
@@ -141,22 +145,29 @@ impl Bacon {
         Ok(())
     }
 
-    pub(crate) fn find_bacon_locations(
+    /// Walks `root` recursively for files named `locations_file_name`. Iterative
+    /// (stack-based) so it doesn't grow the async stack on deep trees, and uses
+    /// `tokio::fs` so the directory walk yields to the runtime instead of
+    /// blocking the executor on large workspaces.
+    pub(crate) async fn find_bacon_locations(
         root: &Path,
         locations_file_name: &str,
-        results: &mut Vec<PathBuf>,
-    ) -> Result<(), Box<dyn Error>> {
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                Self::find_bacon_locations(&path, locations_file_name, results)?;
-            } else if path.file_name().is_some_and(|name| name == locations_file_name) {
-                results.push(path);
+    ) -> std::io::Result<Vec<PathBuf>> {
+        let mut results = Vec::new();
+        let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let mut entries = tokio::fs::read_dir(&dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                let file_type = entry.file_type().await?;
+                if file_type.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().is_some_and(|name| name == locations_file_name) {
+                    results.push(path);
+                }
             }
         }
-        Ok(())
+        Ok(results)
     }
 
     fn parse_severity(severity_str: &str) -> DiagnosticSeverity {
@@ -186,7 +197,7 @@ impl Bacon {
 
         if line_split.len() != 9 {
             tracing::error!(
-                "malformed line: expected 8 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|rendered_message|:|replacement` but found {}: {}",
+                "malformed line: expected 9 parts in the format of `severity|:|path|:|line_start|:|line_end|:|column_start|:|column_end|:|message|:|rendered_message|:|replacement` but found {}: {}",
                 line_split.len(),
                 line
             );
@@ -206,7 +217,11 @@ impl Bacon {
             }
         };
 
-        let path = match str::parse::<Uri>(&path_to_file_uri(&file_path.display().to_string())) {
+        let Some(file_path_str) = file_path.to_str() else {
+            tracing::error!("file path is not valid UTF-8: {}", file_path.display());
+            return None;
+        };
+        let path = match str::parse::<Uri>(&path_to_file_uri(file_path_str)) {
             Ok(url) => url,
             Err(e) => {
                 tracing::error!("error parsing file path {}: {}", file_path.display(), e);
@@ -253,15 +268,17 @@ impl Bacon {
         Some((path, diagnostic))
     }
 
-    fn deduplicate_diagnostics(path: Uri, uri: &Uri, diagnostic: Diagnostic, diagnostics: &mut Vec<(Uri, Diagnostic)>) {
-        if &path == uri
-            && !diagnostics.iter().any(|(existing_path, existing_diagnostic)| {
-                existing_path == &path
-                    && diagnostic.range == existing_diagnostic.range
-                    && diagnostic.severity == existing_diagnostic.severity
-                    && diagnostic.message == existing_diagnostic.message
-            })
-        {
+    fn deduplicate_diagnostics(
+        path: Uri,
+        uri: &Uri,
+        diagnostic: Diagnostic,
+        diagnostics: &mut Vec<(Uri, Diagnostic)>,
+        seen: &mut HashSet<DiagKey>,
+    ) {
+        if &path != uri {
+            return;
+        }
+        if seen.insert(diag_key(&diagnostic)) {
             diagnostics.push((path, diagnostic));
         }
     }
@@ -341,6 +358,7 @@ impl Bacon {
         workspace_folders: Option<&[WorkspaceFolder]>,
     ) -> Vec<(Uri, Diagnostic)> {
         let mut diagnostics: Vec<(Uri, Diagnostic)> = vec![];
+        let mut seen: HashSet<DiagKey> = HashSet::new();
 
         if let Some(workspace_folders) = workspace_folders {
             for folder in workspace_folders.iter() {
@@ -357,10 +375,13 @@ impl Bacon {
                     );
                     folder_path = Cow::Owned(git_root);
                 }
-                let mut bacon_locations = Vec::new();
-                if let Err(e) = Bacon::find_bacon_locations(&folder_path, locations_file_name, &mut bacon_locations) {
-                    tracing::warn!("unable to find valid bacon loctions files: {e}");
-                }
+                let bacon_locations = match Bacon::find_bacon_locations(&folder_path, locations_file_name).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("unable to find valid bacon location files: {e}");
+                        Vec::new()
+                    }
+                };
                 for bacon_location in bacon_locations.iter() {
                     tracing::info!("found bacon locations file to parse {}", bacon_location.display());
                     match File::open(&bacon_location).await {
@@ -390,7 +411,13 @@ impl Bacon {
                                             Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
                                     {
                                         tracing::debug!("found diagnostic for {}", path.as_str());
-                                        Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
+                                        Self::deduplicate_diagnostics(
+                                            path.clone(),
+                                            uri,
+                                            diagnostic,
+                                            &mut diagnostics,
+                                            &mut seen,
+                                        );
                                     }
                                     // Reset buffer for new diagnostic entry
                                     buffer.clear();
@@ -408,7 +435,13 @@ impl Bacon {
                                 && let Some((path, diagnostic)) =
                                     Self::parse_bacon_diagnostic_line(&buffer, &folder_path)
                             {
-                                Self::deduplicate_diagnostics(path.clone(), uri, diagnostic, &mut diagnostics);
+                                Self::deduplicate_diagnostics(
+                                    path.clone(),
+                                    uri,
+                                    diagnostic,
+                                    &mut diagnostics,
+                                    &mut seen,
+                                );
                             }
                         }
                         Err(e) => {
@@ -840,5 +873,176 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
             Bacon::parse_severity("future-rustc-level"),
             DiagnosticSeverity::INFORMATION
         );
+    }
+
+    #[test]
+    fn test_parse_positions_valid() {
+        let parts = ["1", "2", "3", "4"];
+        assert_eq!(Bacon::parse_positions(&parts), Some((1, 2, 3, 4)));
+    }
+
+    #[test]
+    fn test_parse_positions_non_numeric_returns_none() {
+        let parts = ["1", "x", "3", "4"];
+        assert_eq!(Bacon::parse_positions(&parts), None);
+    }
+
+    #[test]
+    fn test_parse_positions_too_few_fields_returns_none() {
+        let parts = ["1", "2", "3"];
+        assert_eq!(Bacon::parse_positions(&parts), None);
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_with_replacement_attaches_correction() {
+        let line =
+            "warning|:|src/lib.rs|:|10|:|10|:|5|:|8|:|unused import|:|none|:|use foo::bar;";
+        let (uri, diag) =
+            Bacon::parse_bacon_diagnostic_line(line, Path::new("/proj")).expect("must parse");
+        assert_eq!(uri.to_string(), "file:///proj/src/lib.rs");
+        assert!(
+            diag.data.is_some(),
+            "non-`none` replacement should attach correction data"
+        );
+        // Position is converted from 1-based to 0-based.
+        assert_eq!(diag.range.start.line, 9);
+        assert_eq!(diag.range.start.character, 4);
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_zero_position_saturates() {
+        // Defensive: 0 in any position field should saturate to 0 rather than
+        // panic on `0 - 1`.
+        let line = "error|:|src/lib.rs|:|0|:|0|:|0|:|0|:|boom|:|none|:|none";
+        let (_, diag) = Bacon::parse_bacon_diagnostic_line(line, Path::new("/p")).unwrap();
+        assert_eq!(diag.range.start.line, 0);
+        assert_eq!(diag.range.start.character, 0);
+        assert_eq!(diag.range.end.line, 0);
+        assert_eq!(diag.range.end.character, 0);
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_strips_ansi_from_rendered() {
+        let line = "error|:|src/lib.rs|:|1|:|1|:|1|:|1|:|raw|:|\u{1b}[31mbright red\u{1b}[0m|:|none";
+        let (_, diag) = Bacon::parse_bacon_diagnostic_line(line, Path::new("/p")).unwrap();
+        // When the rendered slot is non-`none`, it replaces the message and
+        // ANSI codes are stripped.
+        assert_eq!(diag.message, "bright red");
+    }
+
+    #[test]
+    fn test_parse_bacon_diagnostic_line_too_few_fields_returns_none() {
+        let line = "error|:|/file|:|1|:|2|:|3|:|4|:|message";
+        assert_eq!(Bacon::parse_bacon_diagnostic_line(line, Path::new("/p")), None);
+    }
+
+    #[test]
+    fn test_deduplicate_diagnostics_skips_when_path_does_not_match() {
+        let other_uri = str::parse::<Uri>("file:///other.rs").unwrap();
+        let target_uri = str::parse::<Uri>("file:///target.rs").unwrap();
+        let mut diagnostics = Vec::new();
+        let mut seen = HashSet::new();
+        let diag = Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "msg".into(),
+            ..Diagnostic::default()
+        };
+        Bacon::deduplicate_diagnostics(other_uri, &target_uri, diag, &mut diagnostics, &mut seen);
+        assert!(diagnostics.is_empty(), "diagnostic for a different URI must be dropped");
+        assert!(seen.is_empty(), "seen set must not record skipped entries");
+    }
+
+    #[test]
+    fn test_deduplicate_diagnostics_drops_exact_duplicate() {
+        let uri = str::parse::<Uri>("file:///x.rs").unwrap();
+        let mut diagnostics = Vec::new();
+        let mut seen = HashSet::new();
+        let make = || Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "same".into(),
+            ..Diagnostic::default()
+        };
+        Bacon::deduplicate_diagnostics(uri.clone(), &uri, make(), &mut diagnostics, &mut seen);
+        Bacon::deduplicate_diagnostics(uri.clone(), &uri, make(), &mut diagnostics, &mut seen);
+        assert_eq!(diagnostics.len(), 1, "duplicate should not be re-added");
+    }
+
+    #[test]
+    fn test_deduplicate_diagnostics_keeps_distinct_severity() {
+        let uri = str::parse::<Uri>("file:///x.rs").unwrap();
+        let mut diagnostics = Vec::new();
+        let mut seen = HashSet::new();
+        let mut diag = Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "m".into(),
+            ..Diagnostic::default()
+        };
+        Bacon::deduplicate_diagnostics(uri.clone(), &uri, diag.clone(), &mut diagnostics, &mut seen);
+        diag.severity = Some(DiagnosticSeverity::WARNING);
+        Bacon::deduplicate_diagnostics(uri.clone(), &uri, diag, &mut diagnostics, &mut seen);
+        assert_eq!(diagnostics.len(), 2, "different severity ⇒ different diagnostic");
+    }
+
+    #[tokio::test]
+    async fn test_find_bacon_locations_finds_nested_files() {
+        let tmp = TempDir::new().unwrap();
+        // Create root/.bacon-locations and root/sub/sub2/.bacon-locations,
+        // plus an unrelated file that must not match.
+        let root = tmp.path();
+        std::fs::write(root.join(".bacon-locations"), "").unwrap();
+        let nested = root.join("sub").join("sub2");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join(".bacon-locations"), "").unwrap();
+        std::fs::write(root.join("sub").join("other.txt"), "").unwrap();
+
+        let mut found = Bacon::find_bacon_locations(root, ".bacon-locations").await.unwrap();
+        found.sort();
+        assert_eq!(found.len(), 2, "should find both .bacon-locations files");
+        assert!(found.iter().all(|p| p.file_name().unwrap() == ".bacon-locations"));
+    }
+
+    #[tokio::test]
+    async fn test_find_bacon_locations_empty_dir_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let found = Bacon::find_bacon_locations(tmp.path(), ".bacon-locations").await.unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_bacon_locations_missing_root_errors() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let result = Bacon::find_bacon_locations(&missing, ".bacon-locations").await;
+        assert!(result.is_err(), "missing root must surface an io error");
+    }
+
+    #[tokio::test]
+    async fn test_validate_preferences_impl_creates_when_missing_and_requested() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("nested-prefs.toml");
+        // bacon prefs lookup returns one path, file does not exist, create_prefs_file=true.
+        let prefs_list = target.to_str().unwrap();
+        Bacon::validate_preferences_impl(prefs_list.as_bytes(), true)
+            .await
+            .expect("should create prefs file when missing");
+        assert!(target.exists(), "prefs file should be created");
+        // And the freshly-created file must validate cleanly.
+        Bacon::validate_preferences_file(&target)
+            .await
+            .expect("freshly created prefs file should validate");
+    }
+
+    #[tokio::test]
+    async fn test_validate_preferences_impl_no_create_when_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("absent-prefs.toml");
+        let prefs_list = target.to_str().unwrap();
+        Bacon::validate_preferences_impl(prefs_list.as_bytes(), false)
+            .await
+            .expect("missing prefs with create=false is not an error");
+        assert!(!target.exists());
     }
 }

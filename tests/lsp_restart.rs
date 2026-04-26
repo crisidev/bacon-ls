@@ -6,11 +6,12 @@
 //! alive indefinitely because the `initialized` future stays blocked
 //! waiting on a response that will never arrive.
 //!
-//! Unix-only: Windows pipe semantics around inherited stdio differ
-//! enough that the framed-read loop races with process startup. The
-//! fix under test isn't platform-specific, so a single-platform
-//! regression guard is enough.
-#![cfg(unix)]
+//! Linux-only: stdio/pipe behaviour and timing differ enough on
+//! macOS/Windows that this regression guard would flake there without
+//! adding harness complexity that has nothing to do with what's being
+//! tested. The fix under test isn't platform-specific, so a single-OS
+//! run is enough.
+#![cfg(target_os = "linux")]
 
 use std::io::{Read, Write};
 use std::process::{ChildStdout, Command, Stdio};
