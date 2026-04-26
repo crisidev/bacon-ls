@@ -891,7 +891,11 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn test_parse_bacon_diagnostic_line_with_replacement_attaches_correction() {
+        // Skipped on Windows: this test asserts the produced URI as a unix-style
+        // string. On Windows `Path::new("/proj").join("src/lib.rs")` produces
+        // backslashes which percent-encode to `%5C` in the URI.
         let line = "warning|:|src/lib.rs|:|10|:|10|:|5|:|8|:|unused import|:|none|:|use foo::bar;";
         let (uri, diag) = Bacon::parse_bacon_diagnostic_line(line, Path::new("/proj")).expect("must parse");
         assert_eq!(uri.to_string(), "file:///proj/src/lib.rs");
