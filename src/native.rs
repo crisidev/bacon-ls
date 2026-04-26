@@ -6,7 +6,8 @@ use std::{
 
 use anyhow::Context;
 use ls_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, InitializeParams, Location, Position, Range, Uri,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, InitializeParams, Location, Position,
+    Range, Uri,
 };
 use serde::{Deserialize, Deserializer};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
@@ -100,6 +101,11 @@ struct CargoChildren {
 }
 
 #[derive(Debug, Deserialize)]
+struct CargoCode {
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CargoMessage {
     #[serde(rename(deserialize = "$message_type"))]
     message_type: String,
@@ -107,6 +113,29 @@ struct CargoMessage {
     level: String,
     spans: Vec<CargoSpan>,
     children: Vec<CargoChildren>,
+    #[serde(default)]
+    code: Option<CargoCode>,
+}
+
+/// Maps a rustc/clippy lint code to LSP diagnostic tags. Lints that fade in
+/// editors (`unused_*`, `dead_code`, `unreachable_*`) get
+/// `DiagnosticTag::UNNECESSARY`; the `deprecated` lint gets
+/// `DiagnosticTag::DEPRECATED`. Returns `None` for codes that should render
+/// normally (compile errors, clippy lints we don't classify, etc.).
+fn tags_from_code(code: &str) -> Option<Vec<DiagnosticTag>> {
+    let mut tags = Vec::new();
+    if code.starts_with("unused_")
+        || matches!(
+            code,
+            "dead_code" | "unreachable_code" | "unreachable_patterns" | "redundant_imports" | "redundant_semicolons"
+        )
+    {
+        tags.push(DiagnosticTag::UNNECESSARY);
+    }
+    if code == "deprecated" {
+        tags.push(DiagnosticTag::DEPRECATED);
+    }
+    if tags.is_empty() { None } else { Some(tags) }
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +240,12 @@ impl Cargo {
         let rendered = ansi_regex::ansi_regex().replace_all(&message.rendered, "").into_owned();
         let rendered = rendered.trim_end_matches('\n');
 
+        // The lint code lives on the parent message; help/note children inherit
+        // their semantics from it. Propagating the parent's tags to children
+        // keeps the rendering uniform when we emit them as separate
+        // diagnostics on clients that don't support relatedInformation.
+        let tags = message.code.as_ref().and_then(|c| tags_from_code(&c.code));
+
         // When the client supports related information (e.g. VS Code), attach
         // children with primary spans to the parent diagnostic as clickable
         // links. Otherwise emit them as separate diagnostics so editors like
@@ -291,6 +326,7 @@ impl Cargo {
                 message: rendered.to_string(),
                 related_information: related_information.clone(),
                 data,
+                tags: tags.clone(),
                 ..Diagnostic::default()
             };
             tracing::trace!(uri = url.to_string(), ?diagnostic, "sending diagnostic");
@@ -356,6 +392,7 @@ impl Cargo {
                     source: Some(PKG_NAME.to_string()),
                     message: child.message.clone(),
                     data,
+                    tags: tags.clone(),
                     ..Diagnostic::default()
                 };
                 tracing::trace!(uri = url.to_string(), ?diagnostic, "sending child diagnostic");
@@ -800,6 +837,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_tags_from_code_unused_lints_get_unnecessary() {
+        for code in [
+            "unused_variables",
+            "unused_imports",
+            "unused_mut",
+            "unused_assignments",
+            "unused_must_use",
+        ] {
+            assert_eq!(
+                tags_from_code(code),
+                Some(vec![DiagnosticTag::UNNECESSARY]),
+                "{code} should be tagged UNNECESSARY"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tags_from_code_dead_and_unreachable_get_unnecessary() {
+        for code in [
+            "dead_code",
+            "unreachable_code",
+            "unreachable_patterns",
+            "redundant_imports",
+            "redundant_semicolons",
+        ] {
+            assert_eq!(
+                tags_from_code(code),
+                Some(vec![DiagnosticTag::UNNECESSARY]),
+                "{code} should be tagged UNNECESSARY"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tags_from_code_deprecated_gets_deprecated_tag() {
+        assert_eq!(tags_from_code("deprecated"), Some(vec![DiagnosticTag::DEPRECATED]));
+    }
+
+    #[test]
+    fn test_tags_from_code_unrelated_returns_none() {
+        // Compile error code, clippy lint, custom code → no tag.
+        assert_eq!(tags_from_code("E0425"), None);
+        assert_eq!(tags_from_code("clippy::needless_pass_by_value"), None);
+        assert_eq!(tags_from_code("non_snake_case"), None);
+        assert_eq!(tags_from_code(""), None);
+    }
+
     #[tokio::test]
     async fn test_read_until_lf_consumes_terminator() {
         let mut reader = tokio::io::BufReader::new(&b"hello\nworld"[..]);
@@ -947,6 +1032,13 @@ mod tests {
             diag.related_information.as_ref().is_some_and(|r| !r.is_empty()),
             "help child should attach as related information when supported"
         );
+        // The fixture's lint code is `unused_variables` → editors render the
+        // diagnostic faded/grey via the UNNECESSARY tag.
+        assert_eq!(
+            diag.tags.as_deref(),
+            Some(&[DiagnosticTag::UNNECESSARY][..]),
+            "unused_variables warning must be tagged UNNECESSARY"
+        );
     }
 
     // Skipped on Windows for the same reason as
@@ -986,6 +1078,15 @@ mod tests {
             .find(|(_, d)| d.severity == Some(DiagnosticSeverity::HINT))
             .unwrap();
         assert!(help_diag.1.data.is_some(), "help child should carry quick-fix data");
+        // Both the parent warning AND the help child must carry the parent's
+        // UNNECESSARY tag so the editor renders the same range uniformly.
+        for (_, d) in &received {
+            assert_eq!(
+                d.tags.as_deref(),
+                Some(&[DiagnosticTag::UNNECESSARY][..]),
+                "unused_variables tag must propagate to the help child"
+            );
+        }
     }
 
     // Skipped on Windows: this test builds a workspace folder URI from

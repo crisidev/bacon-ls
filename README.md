@@ -68,6 +68,9 @@ See `bacon-ls` 🐽 blog post: https://lmno.lol/crisidev/bacon-language-server
 * Precise diagnostic positions and macro-expanded spans pointed back at the
   call-site.
 * Replacement code actions as suggested by `cargo` / `clippy`.
+* Unused / dead / deprecated code tagged with the LSP `UNNECESSARY` and
+  `DEPRECATED` diagnostic tags (cargo backend only) so editors render
+  unused variables and imports faded, and deprecated items struck through.
 * Streaming partial publishes during a long `cargo` run (configurable refresh
   interval) so the editor lights up as soon as the first errors are known.
 * Manual `bacon_ls.run` LSP command to re-trigger a check on demand.
