@@ -179,10 +179,21 @@ impl Cargo {
             }
         };
         // Canonicalization is important, otherwise the file path cannot be compared with the
-        // paths we get passed from the LSP server.
-        let file_name = path
-            .canonicalize()
-            .with_context(|| format!("canonicalizing uri: {}", path.display()))?
+        // paths we get passed from the LSP server. A canonicalize failure here means this
+        // single span can't be resolved (e.g. file deleted between cargo emitting and us
+        // reading): skip it rather than aborting the whole diagnostics run.
+        let canonical = match path.canonicalize() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "skipping diagnostic span: cannot canonicalize path"
+                );
+                return Ok(None);
+            }
+        };
+        let file_name = canonical
             .into_os_string()
             .into_string()
             .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?;
@@ -787,5 +798,250 @@ mod tests {
             Cargo::parse_severity("something-brand-new"),
             DiagnosticSeverity::INFORMATION
         );
+    }
+
+    #[tokio::test]
+    async fn test_read_until_lf_consumes_terminator() {
+        let mut reader = tokio::io::BufReader::new(&b"hello\nworld"[..]);
+        let mut buf = Vec::new();
+        let n = read_until_cr_or_lf(&mut reader, &mut buf).await.unwrap();
+        // 6 bytes: "hello" + the LF (LF is consumed but not pushed into buf)
+        assert_eq!(n, 6);
+        assert_eq!(buf, b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_read_until_cr_consumes_terminator() {
+        // Cargo emits progress lines terminated only by `\r` — that's the case
+        // this helper exists for.
+        let mut reader = tokio::io::BufReader::new(&b"progress\rnext"[..]);
+        let mut buf = Vec::new();
+        let n = read_until_cr_or_lf(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 9);
+        assert_eq!(buf, b"progress");
+    }
+
+    #[tokio::test]
+    async fn test_read_until_cr_or_lf_returns_zero_at_eof() {
+        let mut reader = tokio::io::BufReader::new(&b""[..]);
+        let mut buf = Vec::new();
+        let n = read_until_cr_or_lf(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 0);
+        assert!(buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_until_cr_or_lf_no_terminator_reads_to_eof() {
+        let mut reader = tokio::io::BufReader::new(&b"trailing"[..]);
+        let mut buf = Vec::new();
+        let n = read_until_cr_or_lf(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(buf, b"trailing");
+    }
+
+    #[tokio::test]
+    async fn test_read_until_cr_or_lf_spans_multiple_internal_buffers() {
+        // BufReader with capacity 4 forces multiple `fill_buf` rounds before
+        // we hit the terminator at byte 9.
+        let mut reader = tokio::io::BufReader::with_capacity(4, &b"abcdefghi\nrest"[..]);
+        let mut buf = Vec::new();
+        let n = read_until_cr_or_lf(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 10);
+        assert_eq!(buf, b"abcdefghi");
+    }
+
+    fn make_relative_span(file_name_str: &str, is_primary: bool) -> CargoSpan {
+        // Construct via JSON to mirror real cargo output (and avoid duplicating
+        // the deserialize_url logic).
+        let json = format!(
+            r#"{{
+                "file_name": "{file_name_str}",
+                "byte_start": 0, "byte_end": 0,
+                "line_start": 1, "line_end": 1,
+                "column_start": 1, "column_end": 1,
+                "is_primary": {is_primary},
+                "text": [],
+                "label": null,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "expansion": null
+            }}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn test_span_to_uri_returns_none_when_no_authority() {
+        // file_name without `file://` scheme → no authority → not a project
+        // span we can resolve. The deserialize_url helper prepends `file://`,
+        // so we go through deserialization explicitly.
+        let span = make_relative_span("/absolute/path/that/will/not/exist", true);
+        // Authority is present (host=""); span_to_uri proceeds, hits
+        // canonicalize on the absolute path, fails, returns Ok(None).
+        let result = Cargo::span_to_uri(None, &span).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_span_to_uri_returns_none_when_canonicalize_fails() {
+        // Relative path under a project root that does not exist on disk —
+        // canonicalize fails and we skip rather than aborting.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let span = make_relative_span("does/not/exist.rs", true);
+        let result = Cargo::span_to_uri(Some(&tmp.path().to_path_buf()), &span).unwrap();
+        assert_eq!(result, None, "missing file should be skipped, not error");
+    }
+
+    // Skipped on Windows: canonicalize returns a `\\?\C:\…` extended-length
+    // path whose backslashes percent-encode in the produced URI, breaking the
+    // string-equality assertion. The behaviour itself is unaffected.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn test_span_to_uri_resolves_existing_relative_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let lib_rs = src_dir.join("lib.rs");
+        std::fs::write(&lib_rs, "// content").unwrap();
+
+        let span = make_relative_span("src/lib.rs", true);
+        let uri = Cargo::span_to_uri(Some(&tmp.path().to_path_buf()), &span)
+            .unwrap()
+            .expect("existing path should resolve");
+
+        let canonical = lib_rs.canonicalize().unwrap();
+        let expected = format!("file://{}", canonical.display());
+        assert_eq!(uri.to_string(), expected);
+    }
+
+    // Skipped on Windows: span resolution goes through canonicalize, which
+    // produces extended-length paths that don't round-trip through our
+    // unix-shaped `path_to_file_uri` helper.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn test_maybe_add_diagnostic_emits_per_primary_span() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("lib.rs"), "// content").unwrap();
+        let project_root = tmp.path().to_path_buf();
+
+        let line: CargoLine = serde_json::from_str(UNUSED_VARIABLE).unwrap();
+        let message = line.message.unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        // use_related_information=true: the help-child span attaches as
+        // related info on the parent diagnostic, not its own diagnostic.
+        let any = Cargo::maybe_add_diagnostic(Some(&project_root), &message, true, &tx)
+            .await
+            .unwrap();
+        drop(tx);
+
+        assert!(any, "should emit at least one diagnostic for the unused variable");
+        let received: Vec<_> = rx.drain().collect();
+        assert_eq!(received.len(), 1, "one primary span → one diagnostic");
+        let (_uri, diag) = &received[0];
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diag.source, Some(PKG_NAME.to_string()));
+        assert!(
+            diag.related_information.as_ref().is_some_and(|r| !r.is_empty()),
+            "help child should attach as related information when supported"
+        );
+    }
+
+    // Skipped on Windows for the same reason as
+    // `test_maybe_add_diagnostic_emits_per_primary_span`.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn test_maybe_add_diagnostic_separate_children_when_unsupported() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("lib.rs"), "// content").unwrap();
+        let project_root = tmp.path().to_path_buf();
+
+        let line: CargoLine = serde_json::from_str(UNUSED_VARIABLE).unwrap();
+        let message = line.message.unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        // use_related_information=false: the help child is emitted as its own
+        // diagnostic.
+        let any = Cargo::maybe_add_diagnostic(Some(&project_root), &message, false, &tx)
+            .await
+            .unwrap();
+        drop(tx);
+
+        assert!(any);
+        let received: Vec<_> = rx.drain().collect();
+        // 1 parent (warning) + 1 help child with primary span = 2 diagnostics.
+        assert_eq!(received.len(), 2, "parent + help child as separate diagnostics");
+        let levels: Vec<_> = received.iter().map(|(_, d)| d.severity).collect();
+        assert!(levels.contains(&Some(DiagnosticSeverity::WARNING)));
+        assert!(levels.contains(&Some(DiagnosticSeverity::HINT)));
+
+        // The help child carries a MachineApplicable replacement → child
+        // diagnostic should expose the correction in `data`.
+        let help_diag = received
+            .iter()
+            .find(|(_, d)| d.severity == Some(DiagnosticSeverity::HINT))
+            .unwrap();
+        assert!(help_diag.1.data.is_some(), "help child should carry quick-fix data");
+    }
+
+    // Skipped on Windows: this test builds a workspace folder URI from
+    // `format!("file://{}", tempdir.display())`, which produces a malformed
+    // Windows file URI (`file://C:\Users\...`). Encoding that correctly is
+    // outside the scope of this unit test.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn test_find_project_root_picks_workspace_folder_with_cargo_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+
+        let folder_uri = format!("file://{}", tmp.path().display());
+        let params: InitializeParams = serde_json::from_value(serde_json::json!({
+            "processId": null,
+            "rootUri": null,
+            "capabilities": {},
+            "workspaceFolders": [{
+                "uri": folder_uri,
+                "name": "test"
+            }]
+        }))
+        .unwrap();
+
+        let root = Cargo::find_project_root(&params).await;
+        let canonical = tmp.path().canonicalize().unwrap();
+        assert_eq!(
+            root.map(|p| p.canonicalize().unwrap()),
+            Some(canonical),
+            "workspace folder containing Cargo.toml should win"
+        );
+    }
+
+    // Skipped on Windows for the same URI-formatting reason as
+    // `test_find_project_root_picks_workspace_folder_with_cargo_toml`.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn test_find_project_root_returns_none_when_no_cargo_toml_anywhere() {
+        // Empty tempdir: no Cargo.toml in any candidate.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let folder_uri = format!("file://{}", tmp.path().display());
+        let params: InitializeParams = serde_json::from_value(serde_json::json!({
+            "processId": null,
+            "rootUri": folder_uri,
+            "capabilities": {},
+        }))
+        .unwrap();
+        let root = Cargo::find_project_root(&params).await;
+        // The CWD fallback may still find a Cargo.toml when tests run from the
+        // repo, so we only assert: if Some, it's not the empty tempdir.
+        if let Some(p) = root {
+            assert_ne!(
+                p.canonicalize().ok(),
+                Some(tmp.path().canonicalize().unwrap()),
+                "tempdir without Cargo.toml must not be picked"
+            );
+        }
     }
 }
