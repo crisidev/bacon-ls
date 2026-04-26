@@ -219,6 +219,17 @@ fn cargo_backend_publishes_error_diagnostic() {
         "expected an ERROR diagnostic mentioning the undefined symbol; got {diags:#?}"
     );
 
+    // Compile errors (E0425) must NOT carry the UNNECESSARY tag — that's
+    // reserved for unused/dead-code lints. Guards against `tags_from_code`
+    // ever over-matching.
+    for d in &diags {
+        let tags = d.get("tags").and_then(|t| t.as_array());
+        assert!(
+            tags.is_none_or(|t| t.is_empty()),
+            "compile error must not be tagged; got {tags:?}"
+        );
+    }
+
     shutdown_and_wait(&mut stdin, &rx, &mut child);
 }
 
@@ -256,6 +267,19 @@ fn cargo_backend_code_action_replaces_unused_variable() {
         .find(|d| d.get("data").is_some())
         .expect("a diagnostic with corrections must be present");
     let range = target.get("range").unwrap().clone();
+
+    // Issue #119: every diagnostic for the unused_variables lint should
+    // carry the LSP `UNNECESSARY` tag (= 1) so editors render it dimmed.
+    for d in &diags {
+        let tags = d
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .unwrap_or_else(|| panic!("expected `tags` array on diagnostic from unused_variables lint, got {d:#?}"));
+        assert!(
+            tags.iter().any(|t| t.as_i64() == Some(1)),
+            "expected DiagnosticTag::UNNECESSARY (1) in tags={tags:?}"
+        );
+    }
 
     let req = json!({
         "jsonrpc": "2.0",
