@@ -30,6 +30,7 @@ codebases where `rust-analyzer` can become slow dealing with diagnostics.
 * [Configuration](#configuration)
     * [Choosing a backend](#choosing-a-backend)
     * [Cargo backend options](#cargo-backend-options)
+    * [Live diagnostics as you type (cargo backend only)](#live-diagnostics-as-you-type-(cargo-backend-only))
     * [Bacon backend options](#bacon-backend-options)
     * [Manually triggering diagnostics](#manually-triggering-diagnostics)
     * [Changing configuration at runtime](#changing-configuration-at-runtime)
@@ -140,7 +141,8 @@ backend starts with sensible defaults. The complete schema is:
       "refreshIntervalSeconds": 1,        // partial publish interval; null/negative = wait until done
       "separateChildDiagnostics": null,   // override "related information" support; null = follow client
       "checkOnSave": true,                // trigger cargo on textDocument/didSave
-      "clearDiagnosticsOnCheck": false    // clear existing diagnostics before each run
+      "clearDiagnosticsOnCheck": false,   // clear existing diagnostics before each run
+      "updateOnInsertDebounceMillis": 500 // debounce for live diagnostics; updateOnInsert itself is in init_options
     },
 
     "bacon": {
@@ -204,6 +206,100 @@ diagnostics — no `bacon` process required.
   files that previously had any before starting the new run. Useful if you want
   the editor's diagnostic counters to drop to zero immediately at the start of
   a check.
+* `updateOnInsertDebounceMillis` (default `500`): when live diagnostics are on
+  (see below), how long the server waits after the last keystroke before
+  triggering a cargo run against the shadow workspace. Lower values feel
+  snappier; higher values reduce the number of cargo invocations during a
+  burst of edits.
+
+### Live diagnostics as you type (cargo backend only)
+
+The cargo backend can publish diagnostics on every keystroke instead of
+waiting for a save. This is opt-in and turned off by default: when it's off,
+the server doesn't even ask the editor for change events.
+
+How it works: on the first dirty buffer, `bacon-ls` builds a "shadow"
+workspace at `target/bacon-ls-live/shadow/` by hardlinking every
+`.gitignore`-respected file from the real workspace. Subsequent keystrokes
+write only the dirty buffer's bytes into the shadow (breaking the hardlink
+so the real file stays untouched), and a debounced cargo run targets the
+shadow with `--target-dir=target/bacon-ls-live/target` and
+`--remap-path-prefix=<shadow>=<real>` so diagnostics open the user's source
+file rather than a `target/` copy. On `didSave` / `didClose` the file's
+shadow entry is replaced with a fresh hardlink to disk.
+
+To enable it the flag has to come through **`initialization_options`**, not
+workspace settings. The reason is timing: the LSP `textDocument/didChange`
+sync capability has to be advertised statically before workspace
+configuration arrives, and clients (Neovim in particular) don't reliably
+retrofit already-attached buffers when the server tries to register that
+capability dynamically after `initialized`.
+
+For Neovim's `vim.lsp.config`:
+
+```lua
+vim.lsp.config('bacon-ls', {
+    init_options = {
+        cargo = { updateOnInsert = true },
+    },
+    settings = {
+        bacon_ls = {
+            backend = "cargo",
+            cargo = {
+                command = "clippy",
+                -- updateOnInsert lives in init_options above; only the
+                -- runtime knob lives here:
+                updateOnInsertDebounceMillis = 500,
+            },
+        },
+    },
+})
+```
+
+For LazyVim:
+
+```lua
+bacon_ls = {
+    enabled = true,
+    init_options = {
+        cargo = { updateOnInsert = true },
+    },
+    settings = {
+        bacon_ls = {
+            backend = "cargo",
+            cargo = {
+                command = "clippy",
+                updateOnInsertDebounceMillis = 500,
+            },
+        },
+    },
+},
+```
+
+Tradeoffs and caveats:
+
+* **Linux-first.** Hardlinking and `--remap-path-prefix` work cross-platform,
+  but the integration tests cover Linux only. Mileage on macOS/Windows may
+  vary.
+* **Separate target directory.** The shadow run uses its own
+  `target/bacon-ls-live/target/` so the live cargo invocation doesn't
+  invalidate caches for the real `cargo build` you might run in a terminal.
+  Cost: extra disk space (typically the size of one debug build).
+* **First run is cold.** Building the shadow workspace and the
+  separate-target cargo cache is a one-shot cost that can take a few seconds
+  on a large project. Subsequent runs are incremental.
+* **No filesystem watcher.** Files added or deleted on disk while the editor
+  is open won't be reflected in the shadow until the next time the server
+  rebuilds it (currently: an LSP restart). Touching a file you've already
+  opened works, because we mirror its dirty state through `didChange`.
+* **`.gitignore` is respected.** The shadow walker uses the same logic as
+  ripgrep (`ignore` crate) with `require_git(false)`, so non-git workspaces
+  are handled too. Hidden files (`.cargo/`, `.git/`, etc.) are skipped.
+
+This feature complements rather than replaces `rust-analyzer`: keeping
+`rust-analyzer` running alongside (with its own diagnostics turned off, see
+the editor setup sections) gives you completion, hover, and go-to-definition
+on top of bacon-ls's live diagnostics.
 
 ### Bacon backend options
 
@@ -360,8 +456,10 @@ vim.lsp.config('bacon-ls', {
 })
 ```
 
-Settings can also be passed via `init_options` as the same `bacon_ls = { ... }`
-table — the server reads from both sources.
+All runtime settings live under the `settings.bacon_ls` table above. The one
+setting that has to be in `init_options` instead is `cargo.updateOnInsert`
+(see [Live diagnostics as you type](#live-diagnostics-as-you-type-cargo-backend-only)
+for why and the exact shape).
 
 When using [codesettings](https://github.com/mrjones2014/codesettings.nvim)
 to manage project local settings

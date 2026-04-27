@@ -12,6 +12,7 @@ use ls_types::{Diagnostic, DiagnosticSeverity, MessageType, ProgressToken, Range
 use native::Cargo;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde_json::{Map, Value};
+use shadow::ShadowWorkspace;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 mod bacon;
 mod lsp;
 mod native;
+mod shadow;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -145,6 +147,16 @@ pub(crate) struct CargoOptions {
     pub(crate) separate_child_diagnostics: Option<bool>,
     pub(crate) check_on_save: bool,
     pub(crate) clear_diagnostics_on_check: bool,
+    /// Live-as-you-type diagnostics. When true, the server mirrors the
+    /// workspace into a hardlinked shadow under
+    /// `target/bacon-ls-live/shadow/`, replaces dirty buffers in the shadow
+    /// on `did_change`, and runs cargo against the shadow with a separate
+    /// target dir. Off by default.
+    pub(crate) update_on_insert: bool,
+    /// Quiet period after the most recent `did_change` before the live
+    /// cargo run is triggered. Coalesces bursts of keystrokes into a single
+    /// run.
+    pub(crate) update_on_insert_debounce: Duration,
 }
 
 impl CargoOptions {
@@ -274,6 +286,13 @@ impl CargoOptions {
                 .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
         }
 
+        if let Some(value) = cargo_obj.get("updateOnInsertDebounceMillis") {
+            let millis = value
+                .as_u64()
+                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+            self.update_on_insert_debounce = Duration::from_millis(millis);
+        }
+
         Ok(())
     }
 
@@ -295,6 +314,8 @@ impl Default for CargoOptions {
             separate_child_diagnostics: None,
             check_on_save: true,
             clear_diagnostics_on_check: false,
+            update_on_insert: false,
+            update_on_insert_debounce: Duration::from_millis(500),
         }
     }
 }
@@ -391,6 +412,15 @@ impl Default for BaconOptions {
     }
 }
 
+/// Per-invocation overrides used to redirect a cargo run from the real
+/// workspace into the hardlinked shadow workspace for live diagnostics.
+#[derive(Debug)]
+pub(crate) struct LiveCheckContext {
+    pub(crate) shadow_root: PathBuf,
+    pub(crate) shadow_target_dir: PathBuf,
+    pub(crate) real_root: PathBuf,
+}
+
 #[derive(Debug)]
 pub(crate) struct CargoRuntime {
     cancel_token: CancellationToken,
@@ -403,6 +433,19 @@ pub(crate) struct CargoRuntime {
     // just triggered (e.g. the initial run from `initialized` immediately
     // followed by the client's first `didOpen`).
     last_run_started: Option<Instant>,
+    /// Hardlinked shadow of the workspace used for live "as you type"
+    /// diagnostics. None until the first did_change with `update_on_insert`
+    /// enabled — building it eagerly at backend init would block startup on
+    /// large workspaces for users who never trigger live mode.
+    pub(crate) shadow: Option<ShadowWorkspace>,
+    /// File URIs that currently have a dirty buffer overlaid in the shadow.
+    /// On did_save / did_close we restore each entry to a hardlink so the
+    /// next live run reads the on-disk version.
+    pub(crate) dirty_files: HashSet<Uri>,
+    /// Pending debounced live-cargo trigger. Each `did_change` cancels the
+    /// prior handle and schedules a new one so only the last keystroke fires
+    /// a check.
+    pub(crate) live_debounce: Option<JoinHandle<()>>,
 }
 
 impl Default for CargoRuntime {
@@ -414,6 +457,9 @@ impl Default for CargoRuntime {
             diagnostics_version: 0,
             build_folder: PathBuf::new(),
             last_run_started: None,
+            shadow: None,
+            dirty_files: HashSet::new(),
+            live_debounce: None,
         }
     }
 }
@@ -437,6 +483,13 @@ struct State {
     diagnostics_data_supported: bool,
     related_information_supported: bool,
     backend: Option<BackendRuntime>,
+    /// Set by `initialize()` from `initialization_options.cargo.updateOnInsert`.
+    /// We need this at initialize-time to advertise a `Full` text-document
+    /// sync capability, because dynamic `client/registerCapability` for
+    /// `textDocument/didChange` after `initialized` doesn't reliably retrofit
+    /// already-attached buffers (Neovim, in particular, ignores it). A
+    /// statically-advertised capability is honored at attach.
+    init_update_on_insert: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -485,7 +538,7 @@ struct DiagnosticData {
     corrections: Vec<Correction>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BaconLs {
     client: Arc<Client>,
     state: Arc<RwLock<State>>,
@@ -499,29 +552,36 @@ impl BaconLs {
         }
     }
 
-    fn configure_tracing(log_level: Option<String>) {
+    fn configure_tracing(log_level: Option<String>, log_path: Option<&Path>) {
         // Configure logging to file.
         let level = log_level.unwrap_or_else(|| env::var("RUST_LOG").unwrap_or("off".to_string()));
         if level == "off" {
             return;
         }
-        let log_path = format!("{PKG_NAME}.log");
+        let default_path = PathBuf::from(format!("{PKG_NAME}.log"));
+        let log_path = log_path.unwrap_or(&default_path);
         let file = match std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&log_path)
+            .open(log_path)
         {
             Ok(file) => file,
             Err(e) => {
                 // stdin/stdout are the LSP jsonrpc pipes; stderr is usually
                 // captured by the client's trace window. One line there is the
                 // best we can do to tell the user why logging is silent.
-                eprintln!("{PKG_NAME}: could not open log file {log_path}: {e} (tracing disabled)");
+                eprintln!(
+                    "{PKG_NAME}: could not open log file {}: {e} (tracing disabled)",
+                    log_path.display()
+                );
                 return;
             }
         };
-        tracing_subscriber::fmt()
+        // try_init: tests may install the subscriber more than once across the
+        // process lifetime (cargo runs them in a single binary). Don't panic
+        // if a global subscriber is already set — the first one wins.
+        let _ = tracing_subscriber::fmt()
             .with_env_filter(level)
             .with_writer(file)
             .with_thread_names(true)
@@ -529,12 +589,12 @@ impl BaconLs {
             .with_target(true)
             .with_file(true)
             .with_line_number(true)
-            .init();
+            .try_init();
     }
 
     /// Run the LSP server.
     pub async fn serve() {
-        Self::configure_tracing(None);
+        Self::configure_tracing(None, None);
         // Lock stdin / stdout.
         let stdin = tokio::io::stdin();
         let stdout = tokio::io::stdout();
@@ -724,6 +784,15 @@ impl BaconLs {
                 }
                 BackendChoice::Cargo => {
                     let mut config = CargoOptions::default();
+                    // `update_on_insert` is sourced exclusively from
+                    // `initialization_options.cargo.updateOnInsert` (read in
+                    // `initialize` and stashed on `State`). The static
+                    // `textDocument/didChange` capability has to be decided
+                    // before workspace settings even arrive, so the runtime
+                    // gate has to come from the same place.
+                    if state.init_update_on_insert {
+                        config.update_on_insert = true;
+                    }
                     if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
                         && let Err(e) = config.update_from_json_obj(cargo_obj)
                     {
@@ -765,9 +834,13 @@ impl BaconLs {
             }
 
             let project_root = state.project_root.clone();
+            let init_update_on_insert = state.init_update_on_insert;
             match &mut state.backend {
                 Some(BackendRuntime::Cargo { config, runtime }) => {
                     config.reset();
+                    if init_update_on_insert {
+                        config.update_on_insert = true;
+                    }
                     if let Some(cargo_obj) = values.get("cargo").and_then(|v| v.as_object())
                         && let Err(e) = config.update_from_json_obj(cargo_obj)
                     {
@@ -827,8 +900,38 @@ impl BaconLs {
         Ok(())
     }
 
+    /// Trigger a save-time cargo run against the real workspace.
     async fn publish_cargo_diagnostics(&self) {
-        tracing::info!("starting cargo diagnostics run");
+        self.publish_cargo_diagnostics_inner(None).await;
+    }
+
+    /// Trigger a live "as you type" cargo run against the hardlinked shadow
+    /// workspace. Builds the shadow on first call. Returns silently if
+    /// `update_on_insert` isn't on or the shadow can't be built.
+    pub(crate) async fn publish_cargo_diagnostics_live(&self) {
+        let live_on = {
+            let state = self.state.read().await;
+            matches!(
+                &state.backend,
+                Some(BackendRuntime::Cargo { config, .. }) if config.update_on_insert
+            )
+        };
+        if !live_on {
+            return;
+        }
+        let Some(shadow) = self.ensure_shadow_built().await else {
+            return;
+        };
+        let ctx = LiveCheckContext {
+            shadow_root: shadow.shadow_root().to_path_buf(),
+            shadow_target_dir: shadow.target_dir().to_path_buf(),
+            real_root: shadow.real_root().to_path_buf(),
+        };
+        self.publish_cargo_diagnostics_inner(Some(&ctx)).await;
+    }
+
+    async fn publish_cargo_diagnostics_inner(&self, live: Option<&LiveCheckContext>) {
+        tracing::info!(live = live.is_some(), "starting cargo diagnostics run");
         let mut guard = self.state.write().await;
         let project_root = guard.project_root.clone();
         let related_information_supported = guard.related_information_supported;
@@ -840,12 +943,33 @@ impl BaconLs {
             .separate_child_diagnostics
             .unwrap_or(!related_information_supported);
         let cargo_command = config.command.clone();
-        let cargo_env = config.env.clone();
-        let cmd_args = config.build_command_args();
+        let mut cargo_env = config.env.clone();
+        let mut cmd_args = config.build_command_args();
         let publish_mode = config.publish_mode;
         let clear_diagnostics_on_check = config.clear_diagnostics_on_check;
-        let build_folder = runtime.build_folder.clone();
-        runtime.diagnostics_version += 1;
+        let build_folder = match live {
+            Some(ctx) => {
+                cmd_args.push(format!("--target-dir={}", ctx.shadow_target_dir.display()));
+                // `--remap-path-prefix` makes rustc emit diagnostic spans with
+                // the real workspace path in place of the shadow path, so the
+                // editor opens the user's source file instead of a target/ copy.
+                let rustflags = format!(
+                    "--remap-path-prefix={}={}",
+                    ctx.shadow_root.display(),
+                    ctx.real_root.display()
+                );
+                // Honor any RUSTFLAGS the user already set in their config.
+                if let Some(slot) = cargo_env.iter_mut().find(|(k, _)| k == "RUSTFLAGS") {
+                    slot.1.push(' ');
+                    slot.1.push_str(&rustflags);
+                } else {
+                    cargo_env.push(("RUSTFLAGS".to_string(), rustflags));
+                }
+                ctx.shadow_root.clone()
+            }
+            None => runtime.build_folder.clone(),
+        };
+        runtime.diagnostics_version = runtime.diagnostics_version.wrapping_add(1);
         runtime.last_run_started = Some(Instant::now());
         let version = runtime.diagnostics_version;
         let refresh_interval = config.refresh_interval_seconds;
@@ -1107,6 +1231,162 @@ impl BaconLs {
         }
     }
 
+    /// Lazy-build (or fetch) the live shadow workspace. Returns `None` if the
+    /// project root isn't known or the build fails — callers should treat
+    /// that as "skip this live update", not as a hard error.
+    pub(crate) async fn ensure_shadow_built(&self) -> Option<ShadowWorkspace> {
+        // Fast path: shadow already built.
+        {
+            let state = self.state.read().await;
+            if let Some(BackendRuntime::Cargo { runtime, .. }) = &state.backend
+                && let Some(shadow) = &runtime.shadow
+            {
+                return Some(shadow.clone());
+            }
+        }
+
+        let project_root = {
+            let state = self.state.read().await;
+            state.project_root.clone()
+        };
+        let Some(root) = project_root else {
+            tracing::warn!("updateOnInsert: no project root; cannot build live shadow");
+            return None;
+        };
+
+        tracing::info!(root = ?root, "updateOnInsert: building live shadow workspace");
+        // Surface this to the user — it's a one-time, multi-second cost
+        // (tree walk + hardlink fan-out + cold cargo target dir) and
+        // without a heads-up they'd just see the editor go quiet on the
+        // first keystroke.
+        self.client
+            .show_message(
+                MessageType::INFO,
+                "bacon-ls: building live diagnostics shadow workspace (first run only)…",
+            )
+            .await;
+        let shadow = match ShadowWorkspace::build(root).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("updateOnInsert: failed to build shadow: {e}");
+                self.client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("bacon-ls: failed to build live shadow workspace: {e}"),
+                    )
+                    .await;
+                return None;
+            }
+        };
+
+        // Stash; if a parallel did_change raced us and built one too, ours
+        // overwrites — both reflect the same on-disk tree.
+        let mut state = self.state.write().await;
+        if let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend {
+            runtime.shadow = Some(shadow.clone());
+        }
+        drop(state);
+        // Quieter signal that the shadow is ready — goes to the LSP trace
+        // pane rather than popping a second toast.
+        self.client
+            .log_message(
+                MessageType::INFO,
+                "bacon-ls: live diagnostics shadow ready; subsequent edits will be checked as you type.",
+            )
+            .await;
+        Some(shadow)
+    }
+
+    /// Apply a dirty buffer (from `did_change`) to the shadow workspace.
+    /// Tracks the URI in `dirty_files` so we can revert it later via
+    /// `restore_shadow_link_if_dirty` on `did_save` / `did_close`.
+    pub(crate) async fn live_update_dirty(&self, uri: Uri, content: String) {
+        let Some(real_path_cow) = uri.to_file_path() else {
+            tracing::warn!(uri = uri.as_str(), "updateOnInsert: did_change uri is not a file path");
+            return;
+        };
+        let real_path = real_path_cow.into_owned();
+
+        let Some(shadow) = self.ensure_shadow_built().await else {
+            tracing::warn!("updateOnInsert: shadow workspace not available; skipping live update");
+            return;
+        };
+        if let Err(e) = shadow.write_dirty(&real_path, &content).await {
+            tracing::warn!(path = ?real_path, ?e, "updateOnInsert: shadow write failed (file outside workspace?)");
+            return;
+        }
+
+        let debounce = {
+            let mut state = self.state.write().await;
+            let Some(BackendRuntime::Cargo { config, runtime }) = &mut state.backend else {
+                return;
+            };
+            runtime.dirty_files.insert(uri.clone());
+            config.update_on_insert_debounce
+        };
+
+        tracing::info!(
+            uri = uri.as_str(),
+            debounce_ms = debounce.as_millis() as u64,
+            "updateOnInsert: shadow updated, scheduling live cargo run"
+        );
+        self.schedule_live_run(debounce).await;
+    }
+
+    /// Schedule (or reschedule) a live cargo run to fire after `delay` of
+    /// idle time. Cancels any previously-scheduled live trigger so a burst of
+    /// keystrokes coalesces into a single run.
+    pub(crate) async fn schedule_live_run(&self, delay: Duration) {
+        let mut state = self.state.write().await;
+        let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend else {
+            return;
+        };
+        if let Some(prev) = runtime.live_debounce.take() {
+            prev.abort();
+        }
+        let bacon = self.clone();
+        runtime.live_debounce = Some(tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            bacon.publish_cargo_diagnostics_live().await;
+        }));
+    }
+
+    /// Cancel any pending debounced live trigger. Called on `did_save` so
+    /// the on-save cargo run (against the real workspace) is the canonical
+    /// one and a soon-to-be-stale live run doesn't race it.
+    pub(crate) async fn cancel_live_debounce(&self) {
+        let mut state = self.state.write().await;
+        if let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend
+            && let Some(handle) = runtime.live_debounce.take()
+        {
+            handle.abort();
+        }
+    }
+
+    /// On `did_save` / `did_close`, replace the (possibly dirty) shadow file
+    /// with a fresh hardlink to the on-disk version, and forget the URI.
+    pub(crate) async fn restore_shadow_link_if_dirty(&self, uri: &Uri) {
+        let (shadow, real_path) = {
+            let mut state = self.state.write().await;
+            let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend else {
+                return;
+            };
+            if !runtime.dirty_files.remove(uri) {
+                return;
+            }
+            let Some(shadow) = runtime.shadow.clone() else {
+                return;
+            };
+            let Some(path_cow) = uri.to_file_path() else {
+                return;
+            };
+            (shadow, path_cow.into_owned())
+        };
+        if let Err(e) = shadow.restore_link(&real_path).await {
+            tracing::warn!(path = ?real_path, ?e, "updateOnInsert: failed to restore shadow link");
+        }
+    }
+
     async fn publish_bacon_diagnostics(&self, uri: &Uri) {
         let mut guard = self.state.write().await;
         let workspace_folders = guard.workspace_folders.clone();
@@ -1140,7 +1420,12 @@ mod tests {
 
     #[test]
     fn test_can_configure_tracing() {
-        BaconLs::configure_tracing(Some("info".to_string()));
+        // Direct the test's log file into a tempdir so we don't clobber the
+        // developer's `bacon-ls.log` in the workspace root (which is what
+        // `cargo run` / a live editor session writes to).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("bacon-ls.log");
+        BaconLs::configure_tracing(Some("info".to_string()), Some(&log_path));
     }
 
     #[test]
@@ -1321,6 +1606,7 @@ mod tests {
             "separateChildDiagnostics": true,
             "checkOnSave": false,
             "clearDiagnosticsOnCheck": true,
+            "updateOnInsertDebounceMillis": 250,
         });
         let obj = json.as_object().unwrap();
         opts.update_from_json_obj(obj).expect("should parse");
@@ -1334,6 +1620,21 @@ mod tests {
         assert_eq!(opts.separate_child_diagnostics, Some(true));
         assert!(!opts.check_on_save);
         assert!(opts.clear_diagnostics_on_check);
+        assert_eq!(opts.update_on_insert_debounce, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn test_cargo_options_update_on_insert_defaults_off() {
+        let opts = CargoOptions::default();
+        assert!(!opts.update_on_insert);
+        assert_eq!(opts.update_on_insert_debounce, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_cargo_options_update_on_insert_debounce_rejects_negative() {
+        let mut opts = CargoOptions::default();
+        let json = serde_json::json!({"updateOnInsertDebounceMillis": -50});
+        assert!(opts.update_from_json_obj(json.as_object().unwrap()).is_err());
     }
 
     #[test]

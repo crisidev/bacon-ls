@@ -63,11 +63,31 @@ impl LanguageServer for BaconLs {
             tracing::warn!("client does not support diagnostics data");
         }
 
+        // Initialization options are the only place we can read user
+        // configuration before responding to `initialize`. We need that for
+        // `cargo.updateOnInsert`: the LSP capability `textDocument/didChange`
+        // sync mode has to be advertised statically — clients (Neovim
+        // included) don't reliably retrofit already-attached buffers when we
+        // try to register it dynamically post-`initialized`.
+        let init_update_on_insert = params
+            .initialization_options
+            .as_ref()
+            .and_then(|v| v.get("cargo"))
+            .and_then(|v| v.get("updateOnInsert"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if init_update_on_insert {
+            tracing::info!(
+                "initialization_options.cargo.updateOnInsert = true; advertising textDocument/didChange (Full sync)"
+            );
+        }
+
         let mut state = self.state.write().await;
         state.project_root = project_root;
         state.workspace_folders = params.workspace_folders;
         state.diagnostics_data_supported = diagnostics_data_supported;
         state.related_information_supported = related_information_supported;
+        state.init_update_on_insert = init_update_on_insert;
         tracing::trace!("loaded state from lsp settings: {state:#?}");
         drop(state);
 
@@ -91,13 +111,18 @@ impl LanguageServer for BaconLs {
             capabilities: ServerCapabilities {
                 // Only support UTF-16 positions for now, which is the default when unspecified
                 position_encoding: Some(PositionEncodingKind::UTF16),
-                // We never read document text — diagnostics come from bacon's locations file
-                // or from cargo's JSON output. Ask only for open/close + save notifications;
-                // skip change events so the client doesn't ship the whole buffer on every
-                // keystroke.
+                // Default: no change events — diagnostics come from bacon's
+                // locations file or from cargo's JSON output. The cargo
+                // backend's `updateOnInsert` mode flips this to Full when the
+                // user opts in via `initialization_options.cargo.updateOnInsert`,
+                // so non-users never pay for buffer-shipping.
                 text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
                     open_close: Some(true),
-                    change: Some(TextDocumentSyncKind::NONE),
+                    change: Some(if init_update_on_insert {
+                        TextDocumentSyncKind::FULL
+                    } else {
+                        TextDocumentSyncKind::NONE
+                    }),
                     save: Some(TextDocumentSyncSaveOptions::Supported(true)),
                     ..Default::default()
                 })),
@@ -141,13 +166,20 @@ impl LanguageServer for BaconLs {
         self.pull_configuration().await;
 
         let mut state = self.state.write().await;
-        if state.backend.is_none()
-            && let Err(e) = Self::init_cargo_backend(&mut state, CargoOptions::default())
-        {
-            tracing::error!("{e}");
-            drop(state);
-            self.client.show_message(MessageType::ERROR, e).await;
-            return;
+        if state.backend.is_none() {
+            // No workspace/configuration response (or empty). Still honor
+            // the init-options seed so live mode works for clients that only
+            // provide settings via `initialization_options`.
+            let mut config = CargoOptions::default();
+            if state.init_update_on_insert {
+                config.update_on_insert = true;
+            }
+            if let Err(e) = Self::init_cargo_backend(&mut state, config) {
+                tracing::error!("{e}");
+                drop(state);
+                self.client.show_message(MessageType::ERROR, e).await;
+                return;
+            }
         }
         let backend_chosen = state
             .backend
@@ -221,7 +253,13 @@ impl LanguageServer for BaconLs {
             runtime.open_files.remove(&params.text_document.uri);
             drop(state);
             self.publish_bacon_diagnostics(&params.text_document.uri).await;
+            return;
         }
+        drop(state);
+        // Cargo backend with live shadow: revert any dirty buffer for the
+        // closed file back to a hardlink so subsequent live runs read the
+        // on-disk version.
+        self.restore_shadow_link_if_dirty(&params.text_document.uri).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -241,16 +279,54 @@ impl LanguageServer for BaconLs {
                 }
             }
             BackendRuntime::Cargo { config, .. } => {
-                if config.check_on_save {
-                    drop(state);
+                let check_on_save = config.check_on_save;
+                drop(state);
+                // A pending live run would race with the canonical save run
+                // and publish stale (pre-save) shadow diagnostics on top.
+                // Cancel it before doing anything else.
+                self.cancel_live_debounce().await;
+                // Save makes the shadow's dirty override stale: the on-disk
+                // file now matches what the user wants checked. Restore the
+                // hardlink before the cargo run so the live target dir picks
+                // up the saved content next time it's used.
+                self.restore_shadow_link_if_dirty(&params.text_document.uri).await;
+                if check_on_save {
                     self.publish_cargo_diagnostics().await;
                 }
             }
         }
     }
 
-    async fn did_change(&self, _params: DidChangeTextDocumentParams) {
-        tracing::trace!("client sent didChange request, nothing to do");
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        // Live mode is only meaningful for the cargo backend; the bacon
+        // backend reads diagnostics from a file written by an external bacon
+        // process. Bail early to keep this hot path cheap when disabled.
+        let live_on = {
+            let state = self.state.read().await;
+            matches!(
+                &state.backend,
+                Some(BackendRuntime::Cargo { config, .. }) if config.update_on_insert
+            )
+        };
+        if !live_on {
+            tracing::debug!("did_change ignored: updateOnInsert is off");
+            return;
+        }
+        tracing::info!(
+            uri = params.text_document.uri.as_str(),
+            changes = params.content_changes.len(),
+            "did_change received (live mode)"
+        );
+
+        // We register the change capability dynamically with `Full` sync
+        // (one entry, range = None, full text). Anything else is a client
+        // mismatch — log and skip rather than guess.
+        let Some(content) = params.content_changes.into_iter().find(|c| c.range.is_none()) else {
+            tracing::warn!("did_change without full-sync content; client may not honor dynamic registration");
+            return;
+        };
+
+        self.live_update_dirty(params.text_document.uri, content.text).await;
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
@@ -383,8 +459,14 @@ impl LanguageServer for BaconLs {
                         Err(_) => tracing::warn!("sync files task timed out during shutdown"),
                     }
                 }
-                BackendRuntime::Cargo { runtime, .. } => {
+                BackendRuntime::Cargo { mut runtime, .. } => {
                     runtime.cancel_token.cancel();
+                    // Abort any pending live debounced trigger so the spawned
+                    // sleep doesn't outlive the server and try to invoke
+                    // cargo against a torn-down backend.
+                    if let Some(handle) = runtime.live_debounce.take() {
+                        handle.abort();
+                    }
                 }
             }
         }

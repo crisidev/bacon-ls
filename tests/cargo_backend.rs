@@ -77,17 +77,17 @@ fn spawn_reader(mut stdout: ChildStdout) -> mpsc::Receiver<Value> {
 }
 
 /// Auto-respond to server-initiated requests so the server doesn't stall.
-/// `workspace/configuration` is answered with a single empty object so the
-/// server proceeds with cargo defaults; everything else (e.g.
-/// `window/workDoneProgress/create`) gets a `null` result.
-fn auto_respond(stdin: &mut ChildStdin, msg: &Value) {
+/// `workspace/configuration` is answered with `config_response`; everything
+/// else (e.g. `window/workDoneProgress/create`, `client/registerCapability`)
+/// gets a `null` result.
+fn auto_respond(stdin: &mut ChildStdin, msg: &Value, config_response: &Value) {
     if msg.get("method").is_none() || msg.get("id").is_none() {
         return;
     }
     let id = &msg["id"];
     let method = msg["method"].as_str().unwrap_or("");
     let result = match method {
-        "workspace/configuration" => json!([{}]),
+        "workspace/configuration" => config_response.clone(),
         _ => Value::Null,
     };
     send(stdin, &json!({"jsonrpc": "2.0", "id": id, "result": result}));
@@ -96,7 +96,13 @@ fn auto_respond(stdin: &mut ChildStdin, msg: &Value) {
 /// Read messages off `rx` until `pred` matches, auto-responding to every
 /// server-initiated request along the way. Returns the matched message or
 /// `None` on timeout.
-fn pump<F>(rx: &mpsc::Receiver<Value>, stdin: &mut ChildStdin, timeout: Duration, mut pred: F) -> Option<Value>
+fn pump<F>(
+    rx: &mpsc::Receiver<Value>,
+    stdin: &mut ChildStdin,
+    timeout: Duration,
+    config_response: &Value,
+    mut pred: F,
+) -> Option<Value>
 where
     F: FnMut(&Value) -> bool,
 {
@@ -105,7 +111,7 @@ where
         let Ok(msg) = rx.recv_timeout(remaining) else {
             return None;
         };
-        auto_respond(stdin, &msg);
+        auto_respond(stdin, &msg, config_response);
         if pred(&msg) {
             return Some(msg);
         }
@@ -113,48 +119,94 @@ where
     None
 }
 
+/// Default `workspace/configuration` reply: empty object → server uses
+/// cargo backend defaults. Existing tests rely on this.
+fn empty_config() -> Value {
+    json!([{}])
+}
+
 fn root_uri(dir: &Path) -> String {
     format!("file://{}", dir.display())
 }
 
 fn spawn_server(workdir: &Path) -> Child {
-    Command::new(BIN)
-        .current_dir(workdir)
-        .env_remove("RUST_LOG")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn bacon-ls")
+    spawn_server_with_log(workdir, None)
 }
 
-fn initialize(stdin: &mut ChildStdin, rx: &mpsc::Receiver<Value>, workdir: &Path, related_info_support: bool) {
-    let init = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "processId": null,
-            "rootUri": root_uri(workdir),
-            "workspaceFolders": [{"uri": root_uri(workdir), "name": "fixture"}],
-            "capabilities": {
-                "textDocument": {
-                    "publishDiagnostics": {
-                        "dataSupport": true,
-                        "relatedInformation": related_info_support
-                    }
+fn spawn_server_with_log(workdir: &Path, rust_log: Option<&str>) -> Child {
+    let mut cmd = Command::new(BIN);
+    cmd.current_dir(workdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(level) = rust_log {
+        cmd.env("RUST_LOG", level);
+    } else {
+        cmd.env_remove("RUST_LOG");
+    }
+    cmd.spawn().expect("spawn bacon-ls")
+}
+
+fn read_server_log(workdir: &Path) -> String {
+    std::fs::read_to_string(workdir.join("bacon-ls.log")).unwrap_or_else(|e| format!("<no log: {e}>"))
+}
+
+fn initialize(
+    stdin: &mut ChildStdin,
+    rx: &mpsc::Receiver<Value>,
+    workdir: &Path,
+    related_info_support: bool,
+    config_response: &Value,
+) {
+    initialize_with_init_options(stdin, rx, workdir, related_info_support, config_response, None);
+}
+
+fn initialize_with_init_options(
+    stdin: &mut ChildStdin,
+    rx: &mpsc::Receiver<Value>,
+    workdir: &Path,
+    related_info_support: bool,
+    config_response: &Value,
+    init_options: Option<&Value>,
+) {
+    let mut params = json!({
+        "processId": null,
+        "rootUri": root_uri(workdir),
+        "workspaceFolders": [{"uri": root_uri(workdir), "name": "fixture"}],
+        "capabilities": {
+            "textDocument": {
+                "publishDiagnostics": {
+                    "dataSupport": true,
+                    "relatedInformation": related_info_support
+                },
+                "synchronization": {
+                    "dynamicRegistration": true
                 }
             }
         }
     });
+    if let Some(opts) = init_options {
+        params["initializationOptions"] = opts.clone();
+    }
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": params,
+    });
     send(stdin, &init);
-    pump(rx, stdin, Duration::from_secs(5), |m| m.get("id") == Some(&json!(1))).expect("initialize response");
+    pump(rx, stdin, Duration::from_secs(5), config_response, |m| {
+        m.get("id") == Some(&json!(1))
+    })
+    .expect("initialize response");
     send(stdin, &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
 }
 
-fn shutdown_and_wait(stdin: &mut ChildStdin, rx: &mpsc::Receiver<Value>, child: &mut Child) {
+fn shutdown_and_wait(stdin: &mut ChildStdin, rx: &mpsc::Receiver<Value>, child: &mut Child, config_response: &Value) {
     send(stdin, &json!({"jsonrpc": "2.0", "id": 999, "method": "shutdown"}));
-    let _ = pump(rx, stdin, Duration::from_secs(5), |m| m.get("id") == Some(&json!(999)));
+    let _ = pump(rx, stdin, Duration::from_secs(5), config_response, |m| {
+        m.get("id") == Some(&json!(999))
+    });
     send(stdin, &json!({"jsonrpc": "2.0", "method": "exit"}));
     // Best-effort wait so the harness doesn't leave zombies behind on
     // assertion failures.
@@ -198,9 +250,9 @@ fn cargo_backend_publishes_error_diagnostic() {
     let mut stdin = child.stdin.take().expect("stdin");
     let rx = spawn_reader(stdout);
 
-    initialize(&mut stdin, &rx, tmp.path(), true);
+    initialize(&mut stdin, &rx, tmp.path(), true, &empty_config());
 
-    let msg = pump(&rx, &mut stdin, Duration::from_secs(60), |m| {
+    let msg = pump(&rx, &mut stdin, Duration::from_secs(60), &empty_config(), |m| {
         diagnostics_for(m, "lib.rs").is_some()
     })
     .expect("publishDiagnostics for src/lib.rs");
@@ -230,7 +282,7 @@ fn cargo_backend_publishes_error_diagnostic() {
         );
     }
 
-    shutdown_and_wait(&mut stdin, &rx, &mut child);
+    shutdown_and_wait(&mut stdin, &rx, &mut child, &empty_config());
 }
 
 #[test]
@@ -249,9 +301,9 @@ fn cargo_backend_code_action_replaces_unused_variable() {
     // related_info_support=false forces the server to emit the help-child
     // span as its own diagnostic with a `data` payload (corrections),
     // which is what powers the QuickFix code action.
-    initialize(&mut stdin, &rx, tmp.path(), false);
+    initialize(&mut stdin, &rx, tmp.path(), false, &empty_config());
 
-    let msg = pump(&rx, &mut stdin, Duration::from_secs(60), |m| {
+    let msg = pump(&rx, &mut stdin, Duration::from_secs(60), &empty_config(), |m| {
         let Some(diags) = diagnostics_for(m, "lib.rs") else {
             return false;
         };
@@ -293,7 +345,7 @@ fn cargo_backend_code_action_replaces_unused_variable() {
     });
     send(&mut stdin, &req);
 
-    let resp = pump(&rx, &mut stdin, Duration::from_secs(10), |m| {
+    let resp = pump(&rx, &mut stdin, Duration::from_secs(10), &empty_config(), |m| {
         m.get("id") == Some(&json!(2))
     })
     .expect("codeAction response");
@@ -324,5 +376,132 @@ fn cargo_backend_code_action_replaces_unused_variable() {
         .expect("workspace edit with changes");
     assert!(edit.contains_key(&uri), "edit must target the diagnostic's URI");
 
-    shutdown_and_wait(&mut stdin, &rx, &mut child);
+    shutdown_and_wait(&mut stdin, &rx, &mut child, &empty_config());
+}
+
+#[test]
+fn cargo_backend_live_diagnostics_without_save() {
+    let tmp = TempDir::new().expect("tempdir");
+    // Start with code that compiles cleanly. The live path must turn the
+    // diagnostic on the moment we tell the server about a dirty buffer
+    // containing broken code, *without* a save.
+    let clean_source = "pub fn ok() -> i32 { 42 }\n";
+    write_fixture(tmp.path(), clean_source);
+
+    let mut child = spawn_server_with_log(tmp.path(), Some("bacon_ls=debug"));
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let rx = spawn_reader(stdout);
+
+    // `cargo.updateOnInsert` MUST come through `initialization_options`:
+    // it drives the static `textDocument/didChange` sync capability advertised
+    // in the `initialize` response, so the client knows to ship change events
+    // from buffer attach onwards. The runtime debounce is still a workspace
+    // setting (it's safe to tweak at runtime).
+    let init_options = json!({
+        "cargo": { "updateOnInsert": true }
+    });
+    let live_config = json!([{
+        "cargo": {
+            "updateOnInsertDebounceMillis": 100,
+        }
+    }]);
+
+    initialize_with_init_options(&mut stdin, &rx, tmp.path(), false, &live_config, Some(&init_options));
+
+    // `initialized` runs `pull_configuration` then `init_cargo_backend` and
+    // *only then* logs the "lsp server initialized with backend: …" line.
+    // Until that's done, `state.backend = None` and `did_change` would bail
+    // with `updateOnInsert is off`. Wait for the log_message notification
+    // before we send any change events.
+    pump(&rx, &mut stdin, Duration::from_secs(10), &live_config, |m| {
+        if m.get("method").and_then(|s| s.as_str()) != Some("window/logMessage") {
+            return false;
+        }
+        m.get("params")
+            .and_then(|p| p.get("message"))
+            .and_then(|s| s.as_str())
+            .is_some_and(|s| s.contains("lsp server initialized with backend"))
+    })
+    .expect("server should announce post-initialized state via window/logMessage");
+
+    let lib_uri = format!("{}/src/lib.rs", root_uri(tmp.path()));
+
+    // didOpen mirrors what real LSP clients do; the buffer matches disk so
+    // there's nothing dirty yet.
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": lib_uri,
+                    "languageId": "rust",
+                    "version": 1,
+                    "text": clean_source,
+                }
+            }
+        }),
+    );
+
+    // didChange with broken code. Full sync (range = None on the single
+    // change) is what we registered for via dynamic capability.
+    let dirty_source = "pub fn ok() -> i32 { undefined_symbol_for_live_test }\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": lib_uri,
+                    "version": 2,
+                },
+                "contentChanges": [{ "text": dirty_source }]
+            }
+        }),
+    );
+
+    // Wait for an ERROR publishDiagnostics for src/lib.rs. The initial
+    // real-workspace run (kicked off in `initialized`) may publish empty
+    // diagnostics for the clean source first; we ignore those and keep
+    // waiting. Live mode goes through a cold-cache cargo build the first
+    // time so the timeout is generous.
+    let result = pump(&rx, &mut stdin, Duration::from_secs(120), &live_config, |m| {
+        let Some(diags) = diagnostics_for(m, "lib.rs") else {
+            return false;
+        };
+        diags
+            .iter()
+            .any(|d| d.get("severity").and_then(|s| s.as_i64()) == Some(1))
+    });
+    let msg = match result {
+        Some(m) => m,
+        None => {
+            eprintln!("=== bacon-ls.log ===\n{}", read_server_log(tmp.path()));
+            panic!("live ERROR publishDiagnostics for src/lib.rs (no save was sent)");
+        }
+    };
+
+    let diags = diagnostics_for(&msg, "lib.rs").unwrap();
+    let has_expected_error = diags.iter().any(|d| {
+        let severity = d.get("severity").and_then(|s| s.as_i64());
+        let message = d.get("message").and_then(|s| s.as_str()).unwrap_or("");
+        severity == Some(1) && (message.contains("undefined_symbol_for_live_test") || message.contains("cannot find"))
+    });
+    assert!(
+        has_expected_error,
+        "expected an ERROR diagnostic mentioning the dirty-buffer symbol; got {diags:#?}"
+    );
+
+    // The proof the diagnostic is from the live path, not a phantom save:
+    // the on-disk file is still the clean version we wrote at the start.
+    let on_disk = std::fs::read_to_string(tmp.path().join("src/lib.rs")).unwrap();
+    assert_eq!(
+        on_disk, clean_source,
+        "on-disk source must remain clean; the dirty diagnostic must have come from the live shadow"
+    );
+
+    shutdown_and_wait(&mut stdin, &rx, &mut child, &live_config);
 }
