@@ -9,7 +9,7 @@ use ls_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri, WorkspaceFo
 use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -115,12 +115,14 @@ impl Bacon {
         tracing::info!("creating new bacon preference file {filename}",);
         let toml_string = toml::to_string_pretty(&bacon_config)
             .map_err(|e| format!("error serializing bacon preferences {filename} content: {e}"))?;
-        let mut file = File::create(filename)
+        // `tokio::fs::write` is open + write_all + flush + close in one shot,
+        // so the bytes are durable by the time the future resolves. The
+        // previous `File::create + write_all` form left flushing to drop and
+        // could race a subsequent read on busy CI runners (causing the
+        // freshly-created file to be observed empty during validation).
+        tokio::fs::write(filename, toml_string)
             .await
             .map_err(|e| format!("error creating bacon preferences {filename}: {e}"))?;
-        file.write_all(toml_string.as_bytes())
-            .await
-            .map_err(|e| format!("error writing bacon preferences {filename}: {e}"))?;
         Ok(())
     }
 
