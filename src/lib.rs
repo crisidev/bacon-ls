@@ -127,6 +127,14 @@ pub(crate) enum PublishMode {
     QueueIfRunning,
 }
 
+fn invalid_option(name: &str) -> jsonrpc::Error {
+    jsonrpc::Error {
+        code: jsonrpc::ErrorCode::InvalidParams,
+        message: format!("Invalid value for option \"{name}\"").into(),
+        data: None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CargoFeatures {
     /// use `--all-features`
@@ -245,10 +253,7 @@ impl CargoOptions {
 
     pub(crate) fn update_from_json_obj(&mut self, cargo_obj: &Map<String, Value>) -> jsonrpc::Result<()> {
         if let Some(value) = cargo_obj.get("command") {
-            self.command = value
-                .as_str()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                .to_string();
+            self.command = value.as_str().ok_or_else(|| invalid_option("command"))?.to_string();
         }
 
         if let Some(value) = cargo_obj.get("features") {
@@ -256,39 +261,26 @@ impl CargoOptions {
         }
 
         if let Some(value) = cargo_obj.get("package") {
-            self.package = Some(
-                value
-                    .as_str()
-                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                    .to_string(),
-            );
+            self.package = Some(value.as_str().ok_or_else(|| invalid_option("package"))?.to_string());
         }
 
         if let Some(value) = cargo_obj.get("allTargets") {
-            self.all_targets = value.as_bool().ok_or(jsonrpc::Error {
-                code: jsonrpc::ErrorCode::InvalidParams,
-                message: "Invalid value for option \"allTargets\"".into(),
-                data: None,
-            })?;
+            self.all_targets = value.as_bool().ok_or_else(|| invalid_option("allTargets"))?;
         }
 
         if let Some(value) = cargo_obj.get("noDefaultFeatures") {
-            self.no_default_features = value.as_bool().ok_or(jsonrpc::Error {
-                code: jsonrpc::ErrorCode::InvalidParams,
-                message: "Invalid value for option \"noDefaultFeatures\"".into(),
-                data: None,
-            })?;
+            self.no_default_features = value.as_bool().ok_or_else(|| invalid_option("noDefaultFeatures"))?;
         }
 
         if let Some(value) = cargo_obj.get("extraArgs") {
             self.extra_command_args = value
                 .as_array()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .ok_or_else(|| invalid_option("extraArgs"))?
                 .iter()
                 .map(|item| {
                     item.as_str()
                         .map(|s| s.to_string())
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
+                        .ok_or_else(|| invalid_option("extraArgs"))
                 })
                 .collect::<jsonrpc::Result<Vec<_>>>()?;
         }
@@ -296,21 +288,17 @@ impl CargoOptions {
         if let Some(value) = cargo_obj.get("env") {
             self.env = value
                 .as_object()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .ok_or_else(|| invalid_option("env"))?
                 .iter()
                 .map(|(k, v)| {
-                    let val = v
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                    let val = v.as_str().ok_or_else(|| invalid_option("env"))?;
                     Ok((k.clone(), val.to_string()))
                 })
                 .collect::<jsonrpc::Result<Vec<_>>>()?;
         }
 
         if let Some(value) = cargo_obj.get("cancelRunning") {
-            let cancel = value
-                .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+            let cancel = value.as_bool().ok_or_else(|| invalid_option("cancelRunning"))?;
             self.publish_mode = if cancel {
                 PublishMode::CancelRunning
             } else {
@@ -322,9 +310,7 @@ impl CargoOptions {
             if value.is_null() {
                 self.refresh_interval_seconds = None;
             } else {
-                let seconds = value
-                    .as_i64()
-                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                let seconds = value.as_i64().ok_or_else(|| invalid_option("refreshIntervalSeconds"))?;
                 if seconds < 0 {
                     self.refresh_interval_seconds = None;
                 } else {
@@ -334,25 +320,31 @@ impl CargoOptions {
         }
 
         if let Some(value) = cargo_obj.get("separateChildDiagnostics") {
-            self.separate_child_diagnostics = value.as_bool();
+            self.separate_child_diagnostics = if value.is_null() {
+                None
+            } else {
+                Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid_option("separateChildDiagnostics"))?,
+                )
+            };
         }
 
         if let Some(value) = cargo_obj.get("checkOnSave") {
-            self.check_on_save = value
-                .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+            self.check_on_save = value.as_bool().ok_or_else(|| invalid_option("checkOnSave"))?;
         }
 
         if let Some(value) = cargo_obj.get("clearDiagnosticsOnCheck") {
             self.clear_diagnostics_on_check = value
                 .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                .ok_or_else(|| invalid_option("clearDiagnosticsOnCheck"))?;
         }
 
         if let Some(value) = cargo_obj.get("updateOnInsertDebounceMillis") {
             let millis = value
                 .as_u64()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                .ok_or_else(|| invalid_option("updateOnInsertDebounceMillis"))?;
             self.update_on_insert_debounce = Duration::from_millis(millis);
         }
 
