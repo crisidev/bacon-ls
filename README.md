@@ -133,7 +133,7 @@ backend starts with sensible defaults. The complete schema is:
 
     "cargo": {
       "command": "check",                 // "check" or "clippy"
-      "features": [],                     // cargo --features list
+      "features": [],                     // cargo --features list, ["feat1", "feat2"] or "all"
       "package": null,                    // cargo -p <package>
       "extraArgs": [],                    // appended verbatim after the cargo command
       "env": {},                          // extra environment variables (string -> string)
