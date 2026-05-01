@@ -174,6 +174,7 @@ pub(crate) struct CargoOptions {
     pub(crate) features: CargoFeatures,
     // `-p crate_name`
     pub(crate) package: Option<String>,
+    pub(crate) all_targets: bool,
     // Extra arguments which do not have a nice wrapper
     pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
@@ -226,6 +227,10 @@ impl CargoOptions {
             args.push(pkg);
         }
 
+        if self.all_targets {
+            args.push("--all-targets".to_string());
+        }
+
         for arg in self.extra_command_args.iter().cloned() {
             args.push(arg);
         }
@@ -252,6 +257,14 @@ impl CargoOptions {
                     .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
                     .to_string(),
             );
+        }
+
+        if let Some(value) = cargo_obj.get("allTargets") {
+            self.all_targets = value.as_bool().ok_or(jsonrpc::Error {
+                code: jsonrpc::ErrorCode::InvalidParams,
+                message: "Invalid value for option \"allTargets\"".into(),
+                data: None,
+            })?;
         }
 
         if let Some(value) = cargo_obj.get("extraArgs") {
@@ -345,6 +358,7 @@ impl Default for CargoOptions {
             publish_mode: PublishMode::CancelRunning,
             command: "check".to_string(),
             features: CargoFeatures::default(),
+            all_targets: false,
             extra_command_args: vec![],
             package: None,
             refresh_interval_seconds: Some(Duration::from_secs(1)),
