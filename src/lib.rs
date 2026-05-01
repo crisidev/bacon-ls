@@ -175,6 +175,7 @@ pub(crate) struct CargoOptions {
     // `-p crate_name`
     pub(crate) package: Option<String>,
     pub(crate) all_targets: bool,
+    pub(crate) no_default_features: bool,
     // Extra arguments which do not have a nice wrapper
     pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
@@ -231,6 +232,10 @@ impl CargoOptions {
             args.push("--all-targets".to_string());
         }
 
+        if self.no_default_features {
+            args.push("--no-default-features".to_string());
+        }
+
         for arg in self.extra_command_args.iter().cloned() {
             args.push(arg);
         }
@@ -263,6 +268,14 @@ impl CargoOptions {
             self.all_targets = value.as_bool().ok_or(jsonrpc::Error {
                 code: jsonrpc::ErrorCode::InvalidParams,
                 message: "Invalid value for option \"allTargets\"".into(),
+                data: None,
+            })?;
+        }
+
+        if let Some(value) = cargo_obj.get("noDefaultFeatures") {
+            self.no_default_features = value.as_bool().ok_or(jsonrpc::Error {
+                code: jsonrpc::ErrorCode::InvalidParams,
+                message: "Invalid value for option \"noDefaultFeatures\"".into(),
                 data: None,
             })?;
         }
@@ -367,6 +380,7 @@ impl Default for CargoOptions {
             clear_diagnostics_on_check: false,
             update_on_insert: false,
             update_on_insert_debounce: Duration::from_millis(500),
+            no_default_features: false,
         }
     }
 }
