@@ -127,13 +127,63 @@ pub(crate) enum PublishMode {
     QueueIfRunning,
 }
 
+fn invalid_option(name: &str) -> jsonrpc::Error {
+    jsonrpc::Error {
+        code: jsonrpc::ErrorCode::InvalidParams,
+        message: format!("Invalid value for option \"{name}\"").into(),
+        data: None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CargoFeatures {
+    /// use `--all-features`
+    All,
+    /// pass the feature list as `--features=...`
+    List(Vec<String>),
+}
+
+impl Default for CargoFeatures {
+    fn default() -> Self {
+        Self::List(vec![])
+    }
+}
+
+impl CargoFeatures {
+    fn from_json_value(value: &Value) -> jsonrpc::Result<Self> {
+        match value {
+            Value::Null => Ok(Self::List(vec![])),
+            Value::String(str) if str == "all" => Ok(Self::All),
+            Value::Array(values) => {
+                let features = values
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map(|s| s.to_string())
+                            .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
+                    })
+                    .collect::<jsonrpc::Result<Vec<_>>>()?;
+
+                Ok(Self::List(features))
+            }
+            _ => Err(jsonrpc::Error {
+                code: jsonrpc::ErrorCode::InvalidParams,
+                message: "features must be a list of strings or the string \"all\"".into(),
+                data: None,
+            }),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CargoOptions {
     // "check" or "clippy"
     pub(crate) command: String,
-    pub(crate) features: Vec<String>,
+    pub(crate) features: CargoFeatures,
     // `-p crate_name`
     pub(crate) package: Option<String>,
+    pub(crate) all_targets: bool,
+    pub(crate) no_default_features: bool,
     // Extra arguments which do not have a nice wrapper
     pub(crate) extra_command_args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
@@ -164,20 +214,34 @@ impl CargoOptions {
         let mut args = vec![self.command.clone()];
         args.push("--message-format=json-diagnostic-rendered-ansi".to_string());
 
-        if !self.features.is_empty() {
-            args.push("--features".to_string());
-            let mut features = String::new();
-            for feature in &self.features[..self.features.len() - 1] {
-                features += feature;
-                features += ",";
+        match &self.features {
+            CargoFeatures::All => {
+                args.push("--all-features".to_string());
             }
-            features += &self.features[self.features.len() - 1];
-            args.push(features);
+            CargoFeatures::List(features) if !features.is_empty() => {
+                args.push("--features".to_string());
+                let mut features_list = String::new();
+                for feature in features[..features.len() - 1].iter() {
+                    features_list += feature;
+                    features_list += ",";
+                }
+                features_list += &features[features.len() - 1];
+                args.push(features_list);
+            }
+            _ => {}
         }
 
         if let Some(pkg) = self.package.clone() {
             args.push("-p".to_string());
             args.push(pkg);
+        }
+
+        if self.all_targets {
+            args.push("--all-targets".to_string());
+        }
+
+        if self.no_default_features {
+            args.push("--no-default-features".to_string());
         }
 
         for arg in self.extra_command_args.iter().cloned() {
@@ -189,43 +253,34 @@ impl CargoOptions {
 
     pub(crate) fn update_from_json_obj(&mut self, cargo_obj: &Map<String, Value>) -> jsonrpc::Result<()> {
         if let Some(value) = cargo_obj.get("command") {
-            self.command = value
-                .as_str()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                .to_string();
+            self.command = value.as_str().ok_or_else(|| invalid_option("command"))?.to_string();
         }
 
         if let Some(value) = cargo_obj.get("features") {
-            self.features = value
-                .as_array()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map(|s| s.to_string())
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
-                })
-                .collect::<jsonrpc::Result<Vec<_>>>()?;
+            self.features = CargoFeatures::from_json_value(value)?;
         }
 
         if let Some(value) = cargo_obj.get("package") {
-            self.package = Some(
-                value
-                    .as_str()
-                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
-                    .to_string(),
-            );
+            self.package = Some(value.as_str().ok_or_else(|| invalid_option("package"))?.to_string());
+        }
+
+        if let Some(value) = cargo_obj.get("allTargets") {
+            self.all_targets = value.as_bool().ok_or_else(|| invalid_option("allTargets"))?;
+        }
+
+        if let Some(value) = cargo_obj.get("noDefaultFeatures") {
+            self.no_default_features = value.as_bool().ok_or_else(|| invalid_option("noDefaultFeatures"))?;
         }
 
         if let Some(value) = cargo_obj.get("extraArgs") {
             self.extra_command_args = value
                 .as_array()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .ok_or_else(|| invalid_option("extraArgs"))?
                 .iter()
                 .map(|item| {
                     item.as_str()
                         .map(|s| s.to_string())
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))
+                        .ok_or_else(|| invalid_option("extraArgs"))
                 })
                 .collect::<jsonrpc::Result<Vec<_>>>()?;
         }
@@ -233,21 +288,17 @@ impl CargoOptions {
         if let Some(value) = cargo_obj.get("env") {
             self.env = value
                 .as_object()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?
+                .ok_or_else(|| invalid_option("env"))?
                 .iter()
                 .map(|(k, v)| {
-                    let val = v
-                        .as_str()
-                        .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                    let val = v.as_str().ok_or_else(|| invalid_option("env"))?;
                     Ok((k.clone(), val.to_string()))
                 })
                 .collect::<jsonrpc::Result<Vec<_>>>()?;
         }
 
         if let Some(value) = cargo_obj.get("cancelRunning") {
-            let cancel = value
-                .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+            let cancel = value.as_bool().ok_or_else(|| invalid_option("cancelRunning"))?;
             self.publish_mode = if cancel {
                 PublishMode::CancelRunning
             } else {
@@ -259,9 +310,7 @@ impl CargoOptions {
             if value.is_null() {
                 self.refresh_interval_seconds = None;
             } else {
-                let seconds = value
-                    .as_i64()
-                    .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                let seconds = value.as_i64().ok_or_else(|| invalid_option("refreshIntervalSeconds"))?;
                 if seconds < 0 {
                     self.refresh_interval_seconds = None;
                 } else {
@@ -271,25 +320,31 @@ impl CargoOptions {
         }
 
         if let Some(value) = cargo_obj.get("separateChildDiagnostics") {
-            self.separate_child_diagnostics = value.as_bool();
+            self.separate_child_diagnostics = if value.is_null() {
+                None
+            } else {
+                Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid_option("separateChildDiagnostics"))?,
+                )
+            };
         }
 
         if let Some(value) = cargo_obj.get("checkOnSave") {
-            self.check_on_save = value
-                .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+            self.check_on_save = value.as_bool().ok_or_else(|| invalid_option("checkOnSave"))?;
         }
 
         if let Some(value) = cargo_obj.get("clearDiagnosticsOnCheck") {
             self.clear_diagnostics_on_check = value
                 .as_bool()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                .ok_or_else(|| invalid_option("clearDiagnosticsOnCheck"))?;
         }
 
         if let Some(value) = cargo_obj.get("updateOnInsertDebounceMillis") {
             let millis = value
                 .as_u64()
-                .ok_or(jsonrpc::Error::new(jsonrpc::ErrorCode::InvalidParams))?;
+                .ok_or_else(|| invalid_option("updateOnInsertDebounceMillis"))?;
             self.update_on_insert_debounce = Duration::from_millis(millis);
         }
 
@@ -307,7 +362,8 @@ impl Default for CargoOptions {
             env: Vec::new(),
             publish_mode: PublishMode::CancelRunning,
             command: "check".to_string(),
-            features: vec![],
+            features: CargoFeatures::default(),
+            all_targets: false,
             extra_command_args: vec![],
             package: None,
             refresh_interval_seconds: Some(Duration::from_secs(1)),
@@ -316,6 +372,7 @@ impl Default for CargoOptions {
             clear_diagnostics_on_check: false,
             update_on_insert: false,
             update_on_insert_debounce: Duration::from_millis(500),
+            no_default_features: false,
         }
     }
 }
@@ -1537,7 +1594,7 @@ mod tests {
     #[test]
     fn test_cargo_options_build_args_with_features() {
         let opts = CargoOptions {
-            features: vec!["a".into(), "b".into(), "c".into()],
+            features: CargoFeatures::List(vec!["a".into(), "b".into(), "c".into()]),
             ..CargoOptions::default()
         };
         let args = opts.build_command_args();
@@ -1555,7 +1612,7 @@ mod tests {
     #[test]
     fn test_cargo_options_build_args_single_feature() {
         let opts = CargoOptions {
-            features: vec!["only".into()],
+            features: CargoFeatures::List(vec!["only".into()]),
             ..CargoOptions::default()
         };
         let args = opts.build_command_args();
@@ -1566,6 +1623,23 @@ mod tests {
                 "--message-format=json-diagnostic-rendered-ansi",
                 "--features",
                 "only"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cargo_options_build_args_with_all_features() {
+        let opts = CargoOptions {
+            features: CargoFeatures::All,
+            ..CargoOptions::default()
+        };
+        let args = opts.build_command_args();
+        assert_eq!(
+            args,
+            vec![
+                "check",
+                "--message-format=json-diagnostic-rendered-ansi",
+                "--all-features",
             ]
         );
     }
@@ -1611,7 +1685,10 @@ mod tests {
         let obj = json.as_object().unwrap();
         opts.update_from_json_obj(obj).expect("should parse");
         assert_eq!(opts.command, "clippy");
-        assert_eq!(opts.features, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            opts.features,
+            CargoFeatures::List(vec!["a".to_string(), "b".to_string()])
+        );
         assert_eq!(opts.package.as_deref(), Some("pkg"));
         assert_eq!(opts.extra_command_args, vec!["--workspace".to_string()]);
         assert_eq!(opts.env, vec![("RUST_LOG".into(), "trace".into())]);
@@ -1676,7 +1753,7 @@ mod tests {
     fn test_cargo_options_reset_restores_defaults() {
         let mut opts = CargoOptions {
             command: "clippy".into(),
-            features: vec!["foo".into()],
+            features: CargoFeatures::List(vec!["foo".into()]),
             check_on_save: false,
             ..CargoOptions::default()
         };

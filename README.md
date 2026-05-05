@@ -133,8 +133,10 @@ backend starts with sensible defaults. The complete schema is:
 
     "cargo": {
       "command": "check",                 // "check" or "clippy"
-      "features": [],                     // cargo --features list
+      "features": [],                     // cargo --features list, ["feat1", "feat2"] or "all"
       "package": null,                    // cargo -p <package>
+      "allTargets": false,                // cargo --all-targets
+      "noDefaultFeatures": false,         // cargo --no-default-features
       "extraArgs": [],                    // appended verbatim after the cargo command
       "env": {},                          // extra environment variables (string -> string)
       "cancelRunning": true,              // cancel an in-flight run when a new one is triggered
