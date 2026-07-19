@@ -260,7 +260,7 @@ impl CargoOptions {
             self.features = CargoFeatures::from_json_value(value)?;
         }
 
-        if let Some(value) = cargo_obj.get("package") {
+        if let Some(value) = cargo_obj.get("package").filter(|v| !v.is_null()) {
             self.package = Some(value.as_str().ok_or_else(|| invalid_option("package"))?.to_string());
         }
 
