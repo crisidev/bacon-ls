@@ -257,9 +257,32 @@ impl LanguageServer for BaconLs {
         }
         drop(state);
         // Cargo backend with live shadow: revert any dirty buffer for the
-        // closed file back to a hardlink so subsequent live runs read the
-        // on-disk version.
-        self.restore_shadow_link_if_dirty(&params.text_document.uri).await;
+        // closed file back to the on-disk version so subsequent live runs
+        // read it.
+        if self.restore_shadow_link_if_dirty(&params.text_document.uri, true).await {
+            // The file was closed with unchecked in-buffer changes: whatever
+            // diagnostics we last published were computed against content
+            // that no longer exists anywhere (buffer gone, shadow reverted).
+            // Leaving them up shows stale positions — and a client reopening
+            // the file can even crash re-anchoring a now out-of-range line
+            // (observed in Neovim's diagnostic module). Clear them and let a
+            // fresh live run publish the truth for the on-disk content.
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), vec![], None)
+                .await;
+            let debounce = {
+                let state = self.state.read().await;
+                match &state.backend {
+                    Some(BackendRuntime::Cargo { config, .. }) if config.update_on_insert => {
+                        Some(config.update_on_insert_debounce)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(debounce) = debounce {
+                self.schedule_live_run(debounce).await;
+            }
+        }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -282,14 +305,23 @@ impl LanguageServer for BaconLs {
                 let check_on_save = config.check_on_save;
                 drop(state);
                 // A pending live run would race with the canonical save run
-                // and publish stale (pre-save) shadow diagnostics on top.
-                // Cancel it before doing anything else.
-                self.cancel_live_debounce().await;
+                // and publish stale (pre-save) shadow diagnostics on top, so
+                // cancel it first — but ONLY when a save run will replace it.
+                // With checkOnSave off, the pending live trigger is the only
+                // check this edit will ever get: a save arriving inside the
+                // debounce window (e.g. an editor's save-on-focus-lost right
+                // after a keystroke) would otherwise silently leave
+                // diagnostics stale. Letting it run is safe — the saved file
+                // has the same content the shadow was already checking.
+                if check_on_save {
+                    self.cancel_live_debounce().await;
+                }
                 // Save makes the shadow's dirty override stale: the on-disk
                 // file now matches what the user wants checked. Restore the
                 // hardlink before the cargo run so the live target dir picks
                 // up the saved content next time it's used.
-                self.restore_shadow_link_if_dirty(&params.text_document.uri).await;
+                self.restore_shadow_link_if_dirty(&params.text_document.uri, false)
+                    .await;
                 if check_on_save {
                     self.publish_cargo_diagnostics().await;
                 }
