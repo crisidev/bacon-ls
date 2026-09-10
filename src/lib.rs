@@ -1404,6 +1404,26 @@ impl BaconLs {
         let bacon = self.clone();
         runtime.live_debounce = Some(tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            // The sleep is over: from here this task IS the live cargo run,
+            // not a pending trigger. Drop our own handle before starting the
+            // run so a later schedule_live_run / cancel_live_debounce can no
+            // longer abort() us mid-run — aborting a running task kills the
+            // cargo child and orphans its progress token (a `begin` with no
+            // `end`), which leaves the client's "checking" status spinning
+            // forever. In-flight runs are instead superseded by the
+            // CancelRunning publish mode, which finishes the token properly.
+            //
+            // The take() is best-effort: if a newer trigger already replaced
+            // our handle (and aborted us) while we held nothing, we die at
+            // this .await before touching anything. If we win the race and
+            // null out a newer handle, the worst case is one extra cargo run
+            // that CancelRunning immediately supersedes — never a leak.
+            {
+                let mut state = bacon.state.write().await;
+                if let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend {
+                    let _ = runtime.live_debounce.take();
+                }
+            }
             bacon.publish_cargo_diagnostics_live().await;
         }));
     }
@@ -1421,27 +1441,37 @@ impl BaconLs {
     }
 
     /// On `did_save` / `did_close`, replace the (possibly dirty) shadow file
-    /// with a fresh hardlink to the on-disk version, and forget the URI.
-    pub(crate) async fn restore_shadow_link_if_dirty(&self, uri: &Uri) {
+    /// with the on-disk version, and forget the URI. `discard` selects the
+    /// did_close semantics: restore by copy (fresh mtime, so cargo actually
+    /// re-checks the reverted content instead of replaying the dirty build's
+    /// cached warnings) rather than by hardlink.
+    /// Returns true when the file actually had a dirty override to restore.
+    pub(crate) async fn restore_shadow_link_if_dirty(&self, uri: &Uri, discard: bool) -> bool {
         let (shadow, real_path) = {
             let mut state = self.state.write().await;
             let Some(BackendRuntime::Cargo { runtime, .. }) = &mut state.backend else {
-                return;
+                return false;
             };
             if !runtime.dirty_files.remove(uri) {
-                return;
+                return false;
             }
             let Some(shadow) = runtime.shadow.clone() else {
-                return;
+                return false;
             };
             let Some(path_cow) = uri.to_file_path() else {
-                return;
+                return false;
             };
             (shadow, path_cow.into_owned())
         };
-        if let Err(e) = shadow.restore_link(&real_path).await {
+        let restored = if discard {
+            shadow.restore_copy(&real_path).await
+        } else {
+            shadow.restore_link(&real_path).await
+        };
+        if let Err(e) = restored {
             tracing::warn!(path = ?real_path, ?e, "updateOnInsert: failed to restore shadow link");
         }
+        true
     }
 
     async fn publish_bacon_diagnostics(&self, uri: &Uri) {

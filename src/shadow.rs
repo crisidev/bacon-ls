@@ -104,9 +104,21 @@ impl ShadowWorkspace {
         Ok(())
     }
 
+    /// Restore the shadow entry for `real_path` to a fresh COPY of the
+    /// on-disk content. Used on `did_close` of a dirty buffer: a hardlink
+    /// restore would give the shadow file the real file's (older) mtime,
+    /// making cargo consider the crate fresh and REPLAY the cached warnings
+    /// from the last dirty build instead of re-checking the reverted
+    /// content. A copy gets a now-mtime, forcing a real re-check.
+    pub(crate) async fn restore_copy(&self, real_path: &Path) -> std::io::Result<()> {
+        let content = tokio::fs::read_to_string(real_path).await?;
+        self.write_dirty(real_path, &content).await
+    }
+
     /// Restore the shadow entry for `real_path` back to a hardlink of the
-    /// on-disk file. Used after `did_save` / `did_close` so subsequent cargo
-    /// runs see the saved content.
+    /// on-disk file. Used after `did_save` so subsequent cargo runs see the
+    /// saved content (the just-written mtime keeps cargo's change detection
+    /// correct there — see `restore_copy` for the did_close case).
     pub(crate) async fn restore_link(&self, real_path: &Path) -> std::io::Result<()> {
         let shadow_path = self.shadow_path_for(real_path)?;
         if tokio::fs::try_exists(&shadow_path).await? {
@@ -372,6 +384,31 @@ mod tests {
             "restore_link must hardlink shadow back to the real file"
         );
         assert_eq!(std::fs::read_to_string(&shadow_lib_rs).unwrap(), "saved");
+    }
+
+    #[tokio::test]
+    async fn test_restore_copy_reverts_content_without_hardlinking() {
+        let tmp = TempDir::new().unwrap();
+        mk_file(&tmp.path().join(".gitignore"), "target/\n");
+        let lib_rs = tmp.path().join("src/lib.rs");
+        mk_file(&lib_rs, "saved");
+        let shadow = ShadowWorkspace::build(tmp.path().to_path_buf()).await.unwrap();
+        let shadow_lib_rs = shadow.shadow_root().join("src/lib.rs");
+
+        shadow.write_dirty(&lib_rs, "dirty").await.unwrap();
+        assert_ne!(inode(&lib_rs), inode(&shadow_lib_rs));
+
+        shadow.restore_copy(&lib_rs).await.unwrap();
+        // Content matches the on-disk file again...
+        assert_eq!(std::fs::read_to_string(&shadow_lib_rs).unwrap(), "saved");
+        // ...but it is a distinct inode, not a hardlink: this is what gives
+        // the shadow file a fresh mtime so cargo re-checks instead of
+        // replaying the dirty build's cached diagnostics.
+        assert_ne!(
+            inode(&lib_rs),
+            inode(&shadow_lib_rs),
+            "restore_copy must NOT hardlink (a fresh copy carries a new mtime)"
+        );
     }
 
     #[tokio::test]
