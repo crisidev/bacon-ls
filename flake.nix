@@ -25,6 +25,9 @@
           src = ./.;
         };
       in {
+        # For `nix fmt <file>`:
+        formatter = pkgs.alejandra;
+
         # For `nix build` & `nix run`:
         defaultPackage = bacon-ls;
 
