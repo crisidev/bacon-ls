@@ -119,6 +119,13 @@ bacon 3.8.0  # make sure you have at least 3.8.0
 
 Both [bacon](https://github.com/Canop/bacon/blob/main/flake.nix) and [bacon-ls](./flake.nix) can be consumed from their Nix flakes.
 
+The respective overlays can be found at:
+
+```nix
+bacon-ls.overlay.${system}
+# where system is e.g. x86_64-linux
+```
+
 ## Configuration
 
 `bacon-ls` 🐽 reads its configuration from the `bacon_ls` section of the LSP
