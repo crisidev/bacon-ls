@@ -2,31 +2,32 @@
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     naersk.url = "github:nix-community/naersk";
+    naersk.inputs.nixpkgs.follows = "nixpkgs";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
-  outputs =
-    {
-      self,
-      flake-utils,
-      naersk,
-      nixpkgs,
-    }:
+  outputs = {
+    self,
+    flake-utils,
+    naersk,
+    nixpkgs,
+  }:
     flake-utils.lib.eachDefaultSystem (
-      system:
-      let
+      system: let
         pkgs = (import nixpkgs) {
           inherit system;
         };
 
-        naersk' = pkgs.callPackage naersk { };
+        naersk' = pkgs.callPackage naersk {};
         bacon-ls = naersk'.buildPackage {
-          buildInputs = with pkgs; [ perl openssl ];
-          nativeBuildInputs = with pkgs; [ perl openssl ];
+          buildInputs = with pkgs; [perl openssl];
+          nativeBuildInputs = with pkgs; [perl openssl];
           src = ./.;
         };
-
       in {
+        # For `nix fmt <file>`:
+        formatter = pkgs.alejandra;
+
         # For `nix build` & `nix run`:
         defaultPackage = bacon-ls;
 
