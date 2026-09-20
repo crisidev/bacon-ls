@@ -25,7 +25,9 @@ export async function activate(
 ): Promise<void> {
   let name = "Bacon-ls";
 
-  const outputChannel = vscode.window.createOutputChannel(name);
+  const outputChannel = vscode.window.createOutputChannel(name, {
+    log: true,
+  });
 
   context.subscriptions.push(outputChannel);
 
@@ -85,7 +87,7 @@ export async function activate(
 async function createClient(
   context: vscode.ExtensionContext,
   name: string,
-  outputChannel: vscode.OutputChannel,
+  outputChannel: vscode.LogOutputChannel,
 ): Promise<LanguageClient> {
   const env = { ...process.env };
 

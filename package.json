@@ -241,7 +241,7 @@
     "mocha": "^11.8.0",
     "ovsx": "^1.1.1",
     "prettier": "^3.9.6",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.0"

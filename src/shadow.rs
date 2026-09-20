@@ -387,6 +387,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_restore_copy_reverts_content_without_hardlinking() {
         let tmp = TempDir::new().unwrap();
         mk_file(&tmp.path().join(".gitignore"), "target/\n");
