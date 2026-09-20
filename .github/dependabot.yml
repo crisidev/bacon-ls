@@ -24,3 +24,8 @@ updates:
     ignore:
       # this needs to match engines.vscode and defines the minimum version of vscode
       - dependency-name: '@types/vscode'
+      # @typescript-eslint/* declare a peer dependency of typescript <6.1.0, so a
+      # major bump breaks `npm ci`. Bump by hand once typescript-eslint supports it:
+      # https://github.com/typescript-eslint/typescript-eslint/issues?q=typescript+7
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
