@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,7 +57,11 @@ const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
 /// characters that would otherwise break URI parsing (spaces, `#`, `?`, `%`,
 /// etc.), while leaving `/` intact so path segments survive.
 pub(crate) fn path_to_file_uri(path: &str) -> String {
-    format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    if cfg!(windows) {
+        format!("file:///{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    } else {
+        format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    }
 }
 
 /// Hash key for deduplicating diagnostics that share the same range, severity,
@@ -668,6 +673,7 @@ impl BaconLs {
 
     async fn find_git_root_directory(path: &Path) -> Option<PathBuf> {
         let output = tokio::process::Command::new("git")
+            .stdin(Stdio::null())
             .arg("-C")
             .arg(path)
             .arg("rev-parse")

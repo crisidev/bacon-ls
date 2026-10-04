@@ -1,7 +1,5 @@
 use std::{
-    env,
-    path::{Path, PathBuf},
-    process::Stdio,
+    env, path::{Path, PathBuf}, process::Stdio, str::FromStr,
 };
 
 use anyhow::Context;
@@ -89,8 +87,8 @@ fn deserialize_url<'de, D>(deserializer: D) -> Result<Uri, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let url_str: &str = Deserialize::deserialize(deserializer)?;
-    str::parse::<Uri>(&path_to_file_uri(url_str)).map_err(serde::de::Error::custom)
+    let url_str: String = Deserialize::deserialize(deserializer)?;
+    str::parse::<Uri>(&path_to_file_uri(&url_str)).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,7 +192,7 @@ impl Cargo {
         tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, "building uri");
         // If host is empty, the span.file_name is an absolute path.
         let path = if host.is_empty() {
-            PathBuf::from(span.file_name.path().as_str())
+            PathBuf::from(span.file_name.to_file_path().unwrap_or_default())
         } else {
             let tmp = root_dir.join(host);
             // For first level paths, e.g., `build.rs`, this ensures that we dont join an
@@ -207,12 +205,26 @@ impl Cargo {
                 tmp.join(span.file_name.path().as_str().replacen("/", "", 1))
             }
         };
+        
         // Canonicalization is important, otherwise the file path cannot be compared with the
         // paths we get passed from the LSP server. A canonicalize failure here means this
         // single span can't be resolved (e.g. file deleted between cargo emitting and us
         // reading): skip it rather than aborting the whole diagnostics run.
         let canonical = match path.canonicalize() {
-            Ok(c) => c,
+            Ok(c) => {
+                if cfg!(windows) {
+                    // strip win32 file namespace added by canonicalize
+                    PathBuf::from_str(c
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?
+                        .trim_start_matches("\\\\?\\")
+                    )
+                    .map_err(|_| std::io::Error::other("invalid windows path"))?
+                } else {
+                    c
+                }
+            },
             Err(e) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -222,6 +234,7 @@ impl Cargo {
                 return Ok(None);
             }
         };
+
         let file_name = canonical
             .into_os_string()
             .into_string()
@@ -537,12 +550,16 @@ impl Cargo {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(workspace_folders) = &params.workspace_folders {
             for folder in workspace_folders {
-                candidates.push(PathBuf::from(folder.uri.path().as_str()));
+                if let Some(path) = folder.uri.to_file_path() {
+                    candidates.push(PathBuf::from(path));
+                }
             }
         }
         #[allow(deprecated)]
         if let Some(root_uri) = &params.root_uri {
-            candidates.push(PathBuf::from(root_uri.path().as_str()));
+            if let Some(path) = root_uri.to_file_path() {
+                candidates.push(PathBuf::from(path));
+            }
         }
         #[allow(deprecated)]
         if let Some(root_path) = &params.root_path {
