@@ -274,7 +274,16 @@ impl Bacon {
         diagnostics: &mut Vec<(Uri, Diagnostic)>,
         seen: &mut HashSet<DiagKey>,
     ) {
-        if &path != uri {
+        // On windows, paths are case-insensitive
+        if cfg!(windows) {
+            let a = path.to_string().to_lowercase();
+            let b = uri.to_string().to_lowercase();
+
+            tracing::trace!("Compare:\n{}\n{}", a, b);
+            if a != b {
+                return;
+            }
+        } else if &path != uri {
             return;
         }
         if seen.insert(diag_key(&diagnostic)) {
@@ -752,13 +761,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_multiline_diagnostics_production() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
-        let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
-        let error_path_url = str::parse::<Uri>(&format!("file://{error_path}")).unwrap();
+        let error_path = tmp_dir.path().join("src/lib.rs").to_string_lossy().into_owned();
+        let error_path_url = str::parse::<Uri>(&path_to_file_uri(&error_path)).unwrap();
         writeln!(
             tmp_file,
             "warning|:|src/lib.rs|:|130|:|142|:|33|:|34|:|this if statement can be collapsed|:|none|:|none"
@@ -800,7 +808,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
+            uri: str::parse::<Uri>(&path_to_file_uri(&tmp_dir.path().to_string_lossy())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 4);
@@ -815,13 +823,12 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_bacon_diagnostics_production_and_deduplication() {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join(".bacon-locations");
         let mut tmp_file = std::fs::File::create(file_path).unwrap();
-        let error_path = format!("{}/src/lib.rs", tmp_dir.path().display());
-        let error_path_url = str::parse::<Uri>(&format!("file://{error_path}")).unwrap();
+        let error_path = tmp_dir.path().join("src/lib.rs").to_string_lossy().into_owned();
+        let error_path_url = str::parse::<Uri>(&path_to_file_uri(&error_path)).unwrap();
         writeln!(
             tmp_file,
             "error|:|{error_path}|:|352|:|352|:|9|:|20|:|cannot find value `one` in this scope|:|none|:|none"
@@ -846,7 +853,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
 
         let workspace_folders = Some(vec![WorkspaceFolder {
             name: tmp_dir.path().display().to_string(),
-            uri: str::parse::<Uri>(&format!("file://{}", tmp_dir.path().display())).unwrap(),
+            uri: str::parse::<Uri>(&path_to_file_uri(&tmp_dir.path().to_string_lossy())).unwrap(),
         }]);
         let diagnostics = Bacon::diagnostics(&error_path_url, LOCATIONS_FILE, workspace_folders.as_deref()).await;
         assert_eq!(diagnostics.len(), 3);
@@ -894,11 +901,7 @@ error: could not compile `bacon-ls` (lib) due to 1 previous error"#
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn test_parse_bacon_diagnostic_line_with_replacement_attaches_correction() {
-        // Skipped on Windows: this test asserts the produced URI as a unix-style
-        // string. On Windows `Path::new("/proj").join("src/lib.rs")` produces
-        // backslashes which percent-encode to `%5C` in the URI.
         let line = "warning|:|src/lib.rs|:|10|:|10|:|5|:|8|:|unused import|:|none|:|use foo::bar;";
         let (uri, diag) = Bacon::parse_bacon_diagnostic_line(line, Path::new("/proj")).expect("must parse");
         assert_eq!(uri.to_string(), "file:///proj/src/lib.rs");

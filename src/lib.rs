@@ -81,6 +81,18 @@ pub(crate) fn path_to_file_uri(path: &str) -> String {
     }
 }
 
+/// Hack to fix malformed URIs on windows sent by the tower-lsp-server.
+/// Will likely become unecessary once tower-lsp-server 0.24 releases.
+pub(crate) fn fixup_uri(uri: &Uri) -> Uri {
+    if cfg!(windows) && uri.scheme().as_str() == "file" {
+        path_to_file_uri(&uri.to_file_path().unwrap().to_string_lossy())
+            .parse::<Uri>()
+            .unwrap()
+    } else {
+        uri.clone()
+    }
+}
+
 /// Hash key for deduplicating diagnostics that share the same range, severity,
 /// and message. `DiagnosticSeverity` is `Eq` but not `Hash` in `ls-types`, so we
 /// project it down to a small integer tag.

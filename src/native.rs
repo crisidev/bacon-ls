@@ -621,15 +621,6 @@ mod tests {
     // → three "Remove" corrections.
     const UNUSED_IMPORT_GROUPED: &str = include_str!("testdata/unused-import-compact.json");
 
-    /// Helper to avoid cross-platform path formatting issues
-    fn format_uri(path: &Path) -> String {
-        if !cfg!(windows) {
-            format!("file://{}", path.display())
-        } else {
-            format!("file:///{}", path.to_string_lossy().replace("\\", "/"))
-        }
-    }
-
     #[test]
     fn test_project_span_follows_macro_expansion_chain() {
         let line: CargoLine = serde_json::from_str(TOKIO_SELECT_EXPANSION).unwrap();
@@ -1028,7 +1019,7 @@ mod tests {
             .expect("existing path should resolve");
 
         let canonical = canonicalize_path(&lib_rs).unwrap();
-        let expected = format_uri(&canonical);
+        let expected = path_to_file_uri(&canonical.to_string_lossy());
         assert_eq!(uri.to_string(), expected);
     }
 
@@ -1120,7 +1111,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
 
-        let folder_uri = format_uri(tmp.path());
+        let folder_uri = path_to_file_uri(&tmp.path().to_string_lossy());
         let params: InitializeParams = serde_json::from_value(serde_json::json!({
             "processId": null,
             "rootUri": null,
@@ -1145,7 +1136,7 @@ mod tests {
     async fn test_find_project_root_returns_none_when_no_cargo_toml_anywhere() {
         // Empty tempdir: no Cargo.toml in any candidate.
         let tmp = tempfile::TempDir::new().unwrap();
-        let folder_uri = format_uri(tmp.path());
+        let folder_uri = path_to_file_uri(&tmp.path().to_string_lossy());
         let params: InitializeParams = serde_json::from_value(serde_json::json!({
             "processId": null,
             "rootUri": folder_uri,
