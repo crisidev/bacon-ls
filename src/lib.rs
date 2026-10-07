@@ -83,11 +83,16 @@ pub(crate) fn path_to_file_uri(path: &str) -> String {
 
 /// Hack to fix malformed URIs on windows sent by the tower-lsp-server.
 /// Will likely become unecessary once tower-lsp-server 0.24 releases.
+/// Fallbacks to clone, should fixup fail.
 pub(crate) fn fixup_uri(uri: &Uri) -> Uri {
     if cfg!(windows) && uri.scheme().as_str() == "file" {
-        path_to_file_uri(&uri.to_file_path().unwrap().to_string_lossy())
+        let Some(path) = uri.to_file_path() else {
+            return uri.clone();
+        };
+
+        path_to_file_uri(&path.to_string_lossy())
             .parse::<Uri>()
-            .unwrap_or(uri.clone()) // Fallback to clone, should fixup fail.
+            .unwrap_or_else(|_| uri.clone()) 
     } else {
         uri.clone()
     }

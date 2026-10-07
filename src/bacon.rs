@@ -276,11 +276,7 @@ impl Bacon {
     ) {
         // On windows, paths are case-insensitive
         if cfg!(windows) {
-            let a = path.to_string().to_lowercase();
-            let b = uri.to_string().to_lowercase();
-
-            tracing::trace!("Compare:\n{}\n{}", a, b);
-            if a != b {
+            if path.to_string().to_lowercase() != uri.to_string().to_lowercase() {
                 return;
             }
         } else if &path != uri {
