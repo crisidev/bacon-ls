@@ -87,7 +87,7 @@ pub(crate) fn fixup_uri(uri: &Uri) -> Uri {
     if cfg!(windows) && uri.scheme().as_str() == "file" {
         path_to_file_uri(&uri.to_file_path().unwrap().to_string_lossy())
             .parse::<Uri>()
-            .unwrap()
+            .unwrap_or(uri.clone()) // Fallback to clone, should fixup fail.
     } else {
         uri.clone()
     }
@@ -2139,5 +2139,20 @@ mod tests {
     fn test_windows_relative_file_uri() {
         let uri = path_to_file_uri("src\\lib.rs");
         assert_eq!(uri, "file://src/lib.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_fixup_uri_normalizes_vscode_drive_spelling() {
+        let vscode: Uri = "file:///c%3A/Users/test/src/lib.rs".parse().unwrap();
+        let fixed = fixup_uri(&vscode);
+        assert_eq!(fixed.as_str(), "file:///c:/Users/test/src/lib.rs");
+
+        // Already fixes uris stay the same
+        assert_eq!(fixup_uri(&fixed), fixed);
+
+        // Non-file uris are unchanged
+        let scm: Uri = "vscode-scm:git/scm4/input?rootUri%3Dfile%253A".parse().unwrap();
+        assert_eq!(fixup_uri(&scm), scm);
     }
 }

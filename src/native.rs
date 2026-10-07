@@ -216,7 +216,11 @@ impl Cargo {
         tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, "building uri");
         // If host is empty, the span.file_name is an absolute path.
         let path = if host.is_empty() {
-            PathBuf::from(span.file_name.to_file_path().unwrap_or_default())
+            PathBuf::from(
+                span.file_name
+                    .to_file_path()
+                    .ok_or(std::io::Error::other("file path is empty"))?,
+            )
         } else {
             let tmp = root_dir.join(host);
             // For first level paths, e.g., `build.rs`, this ensures that we dont join an
