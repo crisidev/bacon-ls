@@ -53,14 +53,31 @@ const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'}')
     .add(b'%');
 
+/// Helper function to determine, if a path begins with a windows drive prefix.
+fn has_drive_prefix(path: &str) -> bool {
+    let b = path.as_bytes();
+
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
 /// Build a `file://...` URI string from an OS path. Percent-encodes any
 /// characters that would otherwise break URI parsing (spaces, `#`, `?`, `%`,
 /// etc.), while leaving `/` intact so path segments survive.
 pub(crate) fn path_to_file_uri(path: &str) -> String {
-    if cfg!(windows) {
-        format!("file:///{}", utf8_percent_encode(path, PATH_ENCODE_SET))
-    } else {
+    if !cfg!(windows) {
         format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    } else {
+        if has_drive_prefix(path) {
+            format!(
+                "file:///{}",
+                utf8_percent_encode(&path.replace('\\', "/"), PATH_ENCODE_SET)
+            )
+        } else {
+            format!(
+                "file://{}",
+                utf8_percent_encode(&path.replace('\\', "/"), PATH_ENCODE_SET)
+            )
+        }
     }
 }
 
@@ -2096,5 +2113,19 @@ mod tests {
         };
         let args = opts.build_command_args();
         assert!(args.iter().all(|a| !a.contains("A=1") && !a.contains("=1")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_absolute_file_uri() {
+        let uri = path_to_file_uri("c:\\Users\\test\\src\\lib.rs");
+        assert_eq!(uri, "file:///c:/Users/test/src/lib.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_relative_file_uri() {
+        let uri = path_to_file_uri("src\\lib.rs");
+        assert_eq!(uri, "file://src/lib.rs");
     }
 }
