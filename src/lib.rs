@@ -92,7 +92,7 @@ pub(crate) fn fixup_uri(uri: &Uri) -> Uri {
 
         path_to_file_uri(&path.to_string_lossy())
             .parse::<Uri>()
-            .unwrap_or_else(|_| uri.clone()) 
+            .unwrap_or_else(|_| uri.clone())
     } else {
         uri.clone()
     }
