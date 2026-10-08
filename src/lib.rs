@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,11 +53,49 @@ const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'}')
     .add(b'%');
 
+/// Helper function to determine, if a path begins with a windows drive prefix.
+fn has_drive_prefix(path: &str) -> bool {
+    let b = path.as_bytes();
+
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
 /// Build a `file://...` URI string from an OS path. Percent-encodes any
 /// characters that would otherwise break URI parsing (spaces, `#`, `?`, `%`,
 /// etc.), while leaving `/` intact so path segments survive.
 pub(crate) fn path_to_file_uri(path: &str) -> String {
-    format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    if !cfg!(windows) {
+        format!("file://{}", utf8_percent_encode(path, PATH_ENCODE_SET))
+    } else {
+        if has_drive_prefix(path) {
+            format!(
+                "file:///{}",
+                utf8_percent_encode(&path.replace('\\', "/"), PATH_ENCODE_SET)
+            )
+        } else {
+            format!(
+                "file://{}",
+                utf8_percent_encode(&path.replace('\\', "/"), PATH_ENCODE_SET)
+            )
+        }
+    }
+}
+
+/// Hack to fix malformed URIs on windows sent by the tower-lsp-server.
+/// Will likely become unecessary once tower-lsp-server 0.24 releases.
+/// Fallbacks to clone, should fixup fail.
+pub(crate) fn fixup_uri(uri: &Uri) -> Uri {
+    if cfg!(windows) && uri.scheme().as_str() == "file" {
+        let Some(path) = uri.to_file_path() else {
+            return uri.clone();
+        };
+
+        path_to_file_uri(&path.to_string_lossy())
+            .parse::<Uri>()
+            .unwrap_or_else(|_| uri.clone())
+    } else {
+        uri.clone()
+    }
 }
 
 /// Hash key for deduplicating diagnostics that share the same range, severity,
@@ -668,6 +707,7 @@ impl BaconLs {
 
     async fn find_git_root_directory(path: &Path) -> Option<PathBuf> {
         let output = tokio::process::Command::new("git")
+            .stdin(Stdio::null())
             .arg("-C")
             .arg(path)
             .arg("rev-parse")
@@ -2090,5 +2130,34 @@ mod tests {
         };
         let args = opts.build_command_args();
         assert!(args.iter().all(|a| !a.contains("A=1") && !a.contains("=1")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_absolute_file_uri() {
+        let uri = path_to_file_uri("c:\\Users\\test\\src\\lib.rs");
+        assert_eq!(uri, "file:///c:/Users/test/src/lib.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_relative_file_uri() {
+        let uri = path_to_file_uri("src\\lib.rs");
+        assert_eq!(uri, "file://src/lib.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_fixup_uri_normalizes_vscode_drive_spelling() {
+        let vscode: Uri = "file:///c%3A/Users/test/src/lib.rs".parse().unwrap();
+        let fixed = fixup_uri(&vscode);
+        assert_eq!(fixed.as_str(), "file:///c:/Users/test/src/lib.rs");
+
+        // Already fixes uris stay the same
+        assert_eq!(fixup_uri(&fixed), fixed);
+
+        // Non-file uris are unchanged
+        let scm: Uri = "vscode-scm:git/scm4/input?rootUri%3Dfile%253A".parse().unwrap();
+        assert_eq!(fixup_uri(&scm), scm);
     }
 }

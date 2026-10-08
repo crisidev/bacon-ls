@@ -2,6 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
+    str::FromStr,
 };
 
 use anyhow::Context;
@@ -89,8 +90,8 @@ fn deserialize_url<'de, D>(deserializer: D) -> Result<Uri, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let url_str: &str = Deserialize::deserialize(deserializer)?;
-    str::parse::<Uri>(&path_to_file_uri(url_str)).map_err(serde::de::Error::custom)
+    let url_str: String = Deserialize::deserialize(deserializer)?;
+    str::parse::<Uri>(&path_to_file_uri(&url_str)).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +137,27 @@ fn tags_from_code(code: &str) -> Option<Vec<DiagnosticTag>> {
         tags.push(DiagnosticTag::DEPRECATED);
     }
     if tags.is_empty() { None } else { Some(tags) }
+}
+
+/// Helper function to deal with platform differences of Path::canonicalize.
+/// Specifically to avoid win32 file namespaces (\\?\) on windows.
+fn canonicalize_path(path: &Path) -> std::io::Result<PathBuf> {
+    if !cfg!(windows) {
+        path.canonicalize()
+    } else {
+        path.canonicalize().and_then(|p| {
+            // Strip win32 file namespace added by canonicalize.
+            // This breaks paths > 260 characters on windows, which aren't really
+            // supported by cargo anyway: https://github.com/rust-lang/cargo/issues/9770
+            PathBuf::from_str(
+                p.into_os_string()
+                    .into_string()
+                    .map_err(|_orig| std::io::Error::other("cannot convert file name to string"))?
+                    .trim_start_matches("\\\\?\\"),
+            )
+            .map_err(|_| std::io::Error::other("invalid windows path"))
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,7 +216,11 @@ impl Cargo {
         tracing::trace!(?root_dir, ?host, file_name = ?span.file_name, "building uri");
         // If host is empty, the span.file_name is an absolute path.
         let path = if host.is_empty() {
-            PathBuf::from(span.file_name.path().as_str())
+            PathBuf::from(
+                span.file_name
+                    .to_file_path()
+                    .ok_or(std::io::Error::other("file path is empty"))?,
+            )
         } else {
             let tmp = root_dir.join(host);
             // For first level paths, e.g., `build.rs`, this ensures that we dont join an
@@ -207,11 +233,12 @@ impl Cargo {
                 tmp.join(span.file_name.path().as_str().replacen("/", "", 1))
             }
         };
+
         // Canonicalization is important, otherwise the file path cannot be compared with the
         // paths we get passed from the LSP server. A canonicalize failure here means this
         // single span can't be resolved (e.g. file deleted between cargo emitting and us
         // reading): skip it rather than aborting the whole diagnostics run.
-        let canonical = match path.canonicalize() {
+        let canonical = match canonicalize_path(&path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
@@ -222,6 +249,7 @@ impl Cargo {
                 return Ok(None);
             }
         };
+
         let file_name = canonical
             .into_os_string()
             .into_string()
@@ -537,12 +565,16 @@ impl Cargo {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(workspace_folders) = &params.workspace_folders {
             for folder in workspace_folders {
-                candidates.push(PathBuf::from(folder.uri.path().as_str()));
+                if let Some(path) = folder.uri.to_file_path() {
+                    candidates.push(PathBuf::from(path));
+                }
             }
         }
         #[allow(deprecated)]
         if let Some(root_uri) = &params.root_uri {
-            candidates.push(PathBuf::from(root_uri.path().as_str()));
+            if let Some(path) = root_uri.to_file_path() {
+                candidates.push(PathBuf::from(path));
+            }
         }
         #[allow(deprecated)]
         if let Some(root_path) = &params.root_path {
@@ -977,11 +1009,7 @@ mod tests {
         assert_eq!(result, None, "missing file should be skipped, not error");
     }
 
-    // Skipped on Windows: canonicalize returns a `\\?\C:\…` extended-length
-    // path whose backslashes percent-encode in the produced URI, breaking the
-    // string-equality assertion. The behaviour itself is unaffected.
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_span_to_uri_resolves_existing_relative_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let src_dir = tmp.path().join("src");
@@ -994,16 +1022,12 @@ mod tests {
             .unwrap()
             .expect("existing path should resolve");
 
-        let canonical = lib_rs.canonicalize().unwrap();
-        let expected = format!("file://{}", canonical.display());
+        let canonical = canonicalize_path(&lib_rs).unwrap();
+        let expected = path_to_file_uri(&canonical.to_string_lossy());
         assert_eq!(uri.to_string(), expected);
     }
 
-    // Skipped on Windows: span resolution goes through canonicalize, which
-    // produces extended-length paths that don't round-trip through our
-    // unix-shaped `path_to_file_uri` helper.
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_maybe_add_diagnostic_emits_per_primary_span() {
         let tmp = tempfile::TempDir::new().unwrap();
         let src_dir = tmp.path().join("src");
@@ -1041,10 +1065,7 @@ mod tests {
         );
     }
 
-    // Skipped on Windows for the same reason as
-    // `test_maybe_add_diagnostic_emits_per_primary_span`.
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_maybe_add_diagnostic_separate_children_when_unsupported() {
         let tmp = tempfile::TempDir::new().unwrap();
         let src_dir = tmp.path().join("src");
@@ -1089,17 +1110,12 @@ mod tests {
         }
     }
 
-    // Skipped on Windows: this test builds a workspace folder URI from
-    // `format!("file://{}", tempdir.display())`, which produces a malformed
-    // Windows file URI (`file://C:\Users\...`). Encoding that correctly is
-    // outside the scope of this unit test.
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_find_project_root_picks_workspace_folder_with_cargo_toml() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
 
-        let folder_uri = format!("file://{}", tmp.path().display());
+        let folder_uri = path_to_file_uri(&tmp.path().to_string_lossy());
         let params: InitializeParams = serde_json::from_value(serde_json::json!({
             "processId": null,
             "rootUri": null,
@@ -1120,14 +1136,11 @@ mod tests {
         );
     }
 
-    // Skipped on Windows for the same URI-formatting reason as
-    // `test_find_project_root_picks_workspace_folder_with_cargo_toml`.
     #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
     async fn test_find_project_root_returns_none_when_no_cargo_toml_anywhere() {
         // Empty tempdir: no Cargo.toml in any candidate.
         let tmp = tempfile::TempDir::new().unwrap();
-        let folder_uri = format!("file://{}", tmp.path().display());
+        let folder_uri = path_to_file_uri(&tmp.path().to_string_lossy());
         let params: InitializeParams = serde_json::from_value(serde_json::json!({
             "processId": null,
             "rootUri": folder_uri,

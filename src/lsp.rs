@@ -15,6 +15,7 @@ use tower_lsp_server::{LanguageServer, jsonrpc};
 
 use crate::{
     BackendChoice, BackendRuntime, BaconLs, Cargo, CargoOptions, CorrectionEdit, DiagnosticData, PKG_NAME, PKG_VERSION,
+    fixup_uri,
 };
 
 impl LanguageServer for BaconLs {
@@ -224,9 +225,10 @@ impl LanguageServer for BaconLs {
         let mut state = self.state.write().await;
         match &mut state.backend {
             Some(BackendRuntime::Bacon { runtime, .. }) => {
-                runtime.open_files.insert(params.text_document.uri.clone());
+                let uri = fixup_uri(&params.text_document.uri);
+                runtime.open_files.insert(uri.clone());
                 drop(state);
-                self.publish_bacon_diagnostics(&params.text_document.uri).await;
+                self.publish_bacon_diagnostics(&uri).await;
             }
             Some(BackendRuntime::Cargo { runtime, .. }) => {
                 // Debounce against the initial cargo run: on client startup,
@@ -249,17 +251,19 @@ impl LanguageServer for BaconLs {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         tracing::trace!("client sent didClose request");
         let mut state = self.state.write().await;
+        let uri = fixup_uri(&params.text_document.uri);
+
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
-            runtime.open_files.remove(&params.text_document.uri);
+            runtime.open_files.remove(&uri);
             drop(state);
-            self.publish_bacon_diagnostics(&params.text_document.uri).await;
+            self.publish_bacon_diagnostics(&uri).await;
             return;
         }
         drop(state);
         // Cargo backend with live shadow: revert any dirty buffer for the
         // closed file back to the on-disk version so subsequent live runs
         // read it.
-        if self.restore_shadow_link_if_dirty(&params.text_document.uri, true).await {
+        if self.restore_shadow_link_if_dirty(&uri, true).await {
             // The file was closed with unchecked in-buffer changes: whatever
             // diagnostics we last published were computed against content
             // that no longer exists anywhere (buffer gone, shadow reverted).
@@ -267,9 +271,7 @@ impl LanguageServer for BaconLs {
             // the file can even crash re-anchoring a now out-of-range line
             // (observed in Neovim's diagnostic module). Clear them and let a
             // fresh live run publish the truth for the on-disk content.
-            self.client
-                .publish_diagnostics(params.text_document.uri.clone(), vec![], None)
-                .await;
+            self.client.publish_diagnostics(uri.clone(), vec![], None).await;
             let debounce = {
                 let state = self.state.read().await;
                 match &state.backend {
@@ -291,6 +293,7 @@ impl LanguageServer for BaconLs {
         let Some(backend) = &state.backend else {
             return;
         };
+        let uri = fixup_uri(&params.text_document.uri);
         match backend {
             BackendRuntime::Bacon { config, .. } => {
                 if config.update_on_save {
@@ -298,7 +301,7 @@ impl LanguageServer for BaconLs {
                         tokio::time::sleep(config.update_on_save_wait).await;
                     }
                     drop(state);
-                    self.publish_bacon_diagnostics(&params.text_document.uri).await;
+                    self.publish_bacon_diagnostics(&uri).await;
                 }
             }
             BackendRuntime::Cargo { config, .. } => {
@@ -320,8 +323,7 @@ impl LanguageServer for BaconLs {
                 // file now matches what the user wants checked. Restore the
                 // hardlink before the cargo run so the live target dir picks
                 // up the saved content next time it's used.
-                self.restore_shadow_link_if_dirty(&params.text_document.uri, false)
-                    .await;
+                self.restore_shadow_link_if_dirty(&uri, false).await;
                 if check_on_save {
                     self.publish_cargo_diagnostics().await;
                 }
@@ -344,8 +346,9 @@ impl LanguageServer for BaconLs {
             tracing::debug!("did_change ignored: updateOnInsert is off");
             return;
         }
+        let uri = fixup_uri(&params.text_document.uri);
         tracing::info!(
-            uri = params.text_document.uri.as_str(),
+            uri = uri.as_str(),
             changes = params.content_changes.len(),
             "did_change received (live mode)"
         );
@@ -358,7 +361,7 @@ impl LanguageServer for BaconLs {
             return;
         };
 
-        self.live_update_dirty(params.text_document.uri, content.text).await;
+        self.live_update_dirty(uri, content.text).await;
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
@@ -366,7 +369,7 @@ impl LanguageServer for BaconLs {
         let mut state = self.state.write().await;
         if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
             for file in params.files {
-                if let Ok(uri) = str::parse::<Uri>(&file.uri) {
+                if let Ok(uri) = str::parse::<Uri>(&file.uri).as_ref().map(fixup_uri) {
                     runtime.open_files.remove(&uri);
                 }
             }
@@ -377,7 +380,10 @@ impl LanguageServer for BaconLs {
     async fn did_rename_files(&self, params: RenameFilesParams) {
         tracing::debug!("client sent didRenameFiles request for {:?}", params.files);
         for file in params.files {
-            if let (Ok(old_uri), Ok(new_uri)) = (str::parse::<Uri>(&file.old_uri), str::parse::<Uri>(&file.new_uri)) {
+            if let (Ok(old_uri), Ok(new_uri)) = (
+                str::parse::<Uri>(&file.old_uri).as_ref().map(fixup_uri),
+                str::parse::<Uri>(&file.new_uri).as_ref().map(fixup_uri),
+            ) {
                 let mut state = self.state.write().await;
                 if let Some(BackendRuntime::Bacon { runtime, .. }) = &mut state.backend {
                     runtime.open_files.remove(&old_uri);
